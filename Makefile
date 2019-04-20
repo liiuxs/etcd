@@ -10,6 +10,8 @@
 #   make docker-kill
 #   make docker-remove
 
+# .PHONY是一个伪目标，可以防止在Makefile中定义的只执行命令的目标和工作目录下的实际文件出现名字冲突，另一种是提交执行makefile时的效率。
+#  https://blog.csdn.net/derkampf/article/details/70256891 todo
 .PHONY: build
 build:
 	GO_BUILD_FLAGS="-v" ./build
@@ -50,9 +52,18 @@ docker-remove:
 	docker rmi --force `docker images -q` || true
 
 
-
+#  ?= 是如果没有被赋值过就赋予等号后面的值
 GO_VERSION ?= 1.11.4
+# makefile中使用shell命令必须命令前加shell,获取最新的commit id的short
 ETCD_VERSION ?= $(shell git rev-parse --short HEAD || echo "GitNotFound")
+
+test_version:
+# 使用info/warning/error增加调试信息,但是info不能打印出.mk的行号.  这个error可以停止当前makefile的编译
+	$(info GO_VERSION: $(GO_VERSION))
+		$(warning GO_VERSION: $(GO_VERSION))
+#				$(error GO_VERSION: $(GO_VERSION))
+		echo "start the compilexxxxxxxxxxxxxxxxxxxxxxx"
+		@echo "start the compilexxxxxxxxxxxxxxxxxxxxxxx"
 
 TEST_SUFFIX = $(shell date +%s | base64 | head -c 15)
 TEST_OPTS ?= PASSES='unit'

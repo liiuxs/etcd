@@ -24,7 +24,7 @@ import (
 )
 
 func Main() {
-	checkSupportArch()
+	checkSupportArch()  // 
 
 	if len(os.Args) > 1 {
 		cmd := os.Args[1]
