@@ -23,11 +23,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/coreos/etcd/clientv3"
-	"github.com/coreos/etcd/etcdserver/api/v3rpc/rpctypes"
-	"github.com/coreos/etcd/integration"
-	"github.com/coreos/etcd/mvcc/mvccpb"
-	"github.com/coreos/etcd/pkg/testutil"
+	"go.etcd.io/etcd/clientv3"
+	"go.etcd.io/etcd/etcdserver/api/v3rpc/rpctypes"
+	"go.etcd.io/etcd/integration"
+	"go.etcd.io/etcd/mvcc/mvccpb"
+	"go.etcd.io/etcd/pkg/testutil"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -412,6 +412,21 @@ func TestKVRange(t *testing.T) {
 				{Key: []byte("fop"), Value: nil, CreateRevision: 9, ModRevision: 9, Version: 1},
 			},
 		},
+		// fetch keyspace with empty key using WithFromKey
+		{
+			"", "",
+			0,
+			[]clientv3.OpOption{clientv3.WithFromKey(), clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend)},
+
+			[]*mvccpb.KeyValue{
+				{Key: []byte("a"), Value: nil, CreateRevision: 2, ModRevision: 2, Version: 1},
+				{Key: []byte("b"), Value: nil, CreateRevision: 3, ModRevision: 3, Version: 1},
+				{Key: []byte("c"), Value: nil, CreateRevision: 4, ModRevision: 6, Version: 3},
+				{Key: []byte("foo"), Value: nil, CreateRevision: 7, ModRevision: 7, Version: 1},
+				{Key: []byte("foo/abc"), Value: nil, CreateRevision: 8, ModRevision: 8, Version: 1},
+				{Key: []byte("fop"), Value: nil, CreateRevision: 9, ModRevision: 9, Version: 1},
+			},
+		},
 	}
 
 	for i, tt := range tests {
@@ -439,6 +454,11 @@ func TestKVGetErrConnClosed(t *testing.T) {
 	cli := clus.Client(0)
 
 	donec := make(chan struct{})
+	if err := cli.Close(); err != nil {
+		t.Fatal(err)
+	}
+	clus.TakeClient(0)
+
 	go func() {
 		defer close(donec)
 		_, err := cli.Get(context.TODO(), "foo")
@@ -446,11 +466,6 @@ func TestKVGetErrConnClosed(t *testing.T) {
 			t.Fatalf("expected %v or %v, got %v", context.Canceled, grpc.ErrClientConnClosing, err)
 		}
 	}()
-
-	if err := cli.Close(); err != nil {
-		t.Fatal(err)
-	}
-	clus.TakeClient(0)
 
 	select {
 	case <-time.After(integration.RequestWaitTimeout):

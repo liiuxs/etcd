@@ -22,8 +22,8 @@ import (
 	"testing"
 	"time"
 
-	pb "github.com/coreos/etcd/etcdserver/etcdserverpb"
-	"github.com/coreos/etcd/pkg/testutil"
+	pb "go.etcd.io/etcd/etcdserver/etcdserverpb"
+	"go.etcd.io/etcd/pkg/testutil"
 
 	"google.golang.org/grpc"
 )
@@ -39,7 +39,7 @@ func TestOldHealthBalancerGetUnblocking(t *testing.T) {
 	unblockingOpts := grpc.BalancerGetOptions{BlockingWait: false}
 
 	_, _, err := hb.Get(context.Background(), unblockingOpts)
-	if err != ErrNoAddrAvilable {
+	if err != ErrNoAddrAvailable {
 		t.Errorf("Get() with no up endpoints should return ErrNoAddrAvailable, got: %v", err)
 	}
 
@@ -69,7 +69,7 @@ func TestOldHealthBalancerGetUnblocking(t *testing.T) {
 	}
 	down2(errors.New("error"))
 	_, _, err = hb.Get(context.Background(), unblockingOpts)
-	if err != ErrNoAddrAvilable {
+	if err != ErrNoAddrAvailable {
 		t.Errorf("Get() with no up endpoints should return ErrNoAddrAvailable, got: %v", err)
 	}
 }
@@ -191,7 +191,7 @@ func TestOldHealthBalancerGraylist(t *testing.T) {
 
 // TestBalancerDoNotBlockOnClose ensures that balancer and grpc don't deadlock each other
 // due to rapid open/close conn. The deadlock causes balancer.Close() to block forever.
-// See issue: https://github.com/coreos/etcd/issues/7283 for more detail.
+// See issue: https://github.com/etcd-io/etcd/issues/7283 for more detail.
 func TestOldHealthBalancerDoNotBlockOnClose(t *testing.T) {
 	defer testutil.AfterTest(t)
 

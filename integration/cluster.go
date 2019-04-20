@@ -33,24 +33,25 @@ import (
 	"testing"
 	"time"
 
-	"github.com/coreos/etcd/client"
-	"github.com/coreos/etcd/clientv3"
-	"github.com/coreos/etcd/embed"
-	"github.com/coreos/etcd/etcdserver"
-	"github.com/coreos/etcd/etcdserver/api/etcdhttp"
-	"github.com/coreos/etcd/etcdserver/api/rafthttp"
-	"github.com/coreos/etcd/etcdserver/api/v2http"
-	"github.com/coreos/etcd/etcdserver/api/v3client"
-	"github.com/coreos/etcd/etcdserver/api/v3election"
-	epb "github.com/coreos/etcd/etcdserver/api/v3election/v3electionpb"
-	"github.com/coreos/etcd/etcdserver/api/v3lock"
-	lockpb "github.com/coreos/etcd/etcdserver/api/v3lock/v3lockpb"
-	"github.com/coreos/etcd/etcdserver/api/v3rpc"
-	pb "github.com/coreos/etcd/etcdserver/etcdserverpb"
-	"github.com/coreos/etcd/pkg/testutil"
-	"github.com/coreos/etcd/pkg/tlsutil"
-	"github.com/coreos/etcd/pkg/transport"
-	"github.com/coreos/etcd/pkg/types"
+	"go.etcd.io/etcd/client"
+	"go.etcd.io/etcd/clientv3"
+	"go.etcd.io/etcd/embed"
+	"go.etcd.io/etcd/etcdserver"
+	"go.etcd.io/etcd/etcdserver/api/etcdhttp"
+	"go.etcd.io/etcd/etcdserver/api/rafthttp"
+	"go.etcd.io/etcd/etcdserver/api/v2http"
+	"go.etcd.io/etcd/etcdserver/api/v3client"
+	"go.etcd.io/etcd/etcdserver/api/v3election"
+	epb "go.etcd.io/etcd/etcdserver/api/v3election/v3electionpb"
+	"go.etcd.io/etcd/etcdserver/api/v3lock"
+	lockpb "go.etcd.io/etcd/etcdserver/api/v3lock/v3lockpb"
+	"go.etcd.io/etcd/etcdserver/api/v3rpc"
+	pb "go.etcd.io/etcd/etcdserver/etcdserverpb"
+	"go.etcd.io/etcd/pkg/logutil"
+	"go.etcd.io/etcd/pkg/testutil"
+	"go.etcd.io/etcd/pkg/tlsutil"
+	"go.etcd.io/etcd/pkg/transport"
+	"go.etcd.io/etcd/pkg/types"
 
 	"github.com/soheilhy/cmux"
 	"go.uber.org/zap"
@@ -68,8 +69,8 @@ const (
 
 	clusterName  = "etcd"
 	basePort     = 21000
-	UrlScheme    = "unix"
-	UrlSchemeTLS = "unixs"
+	URLScheme    = "unix"
+	URLSchemeTLS = "unixs"
 )
 
 var (
@@ -77,7 +78,7 @@ var (
 
 	// integration test uses unique ports, counting up, to listen for each
 	// member, ensuring restarted members can listen on the same port again.
-	localListenCount int64 = 0
+	localListenCount = int64(0)
 
 	testTLSInfo = transport.TLSInfo{
 		KeyFile:        "./fixtures/server.key.insecure",
@@ -148,6 +149,8 @@ type ClusterConfig struct {
 
 	// UseIP is true to use only IP for gRPC requests.
 	UseIP bool
+
+	LeaseCheckpointInterval time.Duration
 }
 
 type cluster struct {
@@ -157,9 +160,9 @@ type cluster struct {
 
 func schemeFromTLSInfo(tls *transport.TLSInfo) string {
 	if tls == nil {
-		return UrlScheme
+		return URLScheme
 	}
-	return UrlSchemeTLS
+	return URLSchemeTLS
 }
 
 func (c *cluster) fillClusterForMembers() error {
@@ -186,7 +189,7 @@ func (c *cluster) fillClusterForMembers() error {
 	return nil
 }
 
-func newCluster(t *testing.T, cfg *ClusterConfig) *cluster {
+func newCluster(t testing.TB, cfg *ClusterConfig) *cluster {
 	c := &cluster{cfg: cfg}
 	ms := make([]*member, cfg.Size)
 	for i := 0; i < cfg.Size; i++ {
@@ -202,16 +205,16 @@ func newCluster(t *testing.T, cfg *ClusterConfig) *cluster {
 
 // NewCluster returns an unlaunched cluster of the given size which has been
 // set to use static bootstrap.
-func NewCluster(t *testing.T, size int) *cluster {
+func NewCluster(t testing.TB, size int) *cluster {
 	return newCluster(t, &ClusterConfig{Size: size})
 }
 
 // NewClusterByConfig returns an unlaunched cluster defined by a cluster configuration
-func NewClusterByConfig(t *testing.T, cfg *ClusterConfig) *cluster {
+func NewClusterByConfig(t testing.TB, cfg *ClusterConfig) *cluster {
 	return newCluster(t, cfg)
 }
 
-func (c *cluster) Launch(t *testing.T) {
+func (c *cluster) Launch(t testing.TB) {
 	errc := make(chan error)
 	for _, m := range c.Members {
 		// Members are launched in separate goroutines because if they boot
@@ -272,7 +275,7 @@ func (c *cluster) HTTPMembers() []client.Member {
 	return ms
 }
 
-func (c *cluster) mustNewMember(t *testing.T) *member {
+func (c *cluster) mustNewMember(t testing.TB) *member {
 	m := mustNewMember(t,
 		memberConfig{
 			name:                     c.name(rand.Int()),
@@ -289,7 +292,8 @@ func (c *cluster) mustNewMember(t *testing.T) *member {
 			grpcKeepAliveTimeout:     c.cfg.GRPCKeepAliveTimeout,
 			clientMaxCallSendMsgSize: c.cfg.ClientMaxCallSendMsgSize,
 			clientMaxCallRecvMsgSize: c.cfg.ClientMaxCallRecvMsgSize,
-			useIP: c.cfg.UseIP,
+			useIP:                    c.cfg.UseIP,
+			leaseCheckpointInterval:  c.cfg.LeaseCheckpointInterval,
 		})
 	m.DiscoveryURL = c.cfg.DiscoveryURL
 	if c.cfg.UseGRPC {
@@ -300,7 +304,7 @@ func (c *cluster) mustNewMember(t *testing.T) *member {
 	return m
 }
 
-func (c *cluster) addMember(t *testing.T) {
+func (c *cluster) addMember(t testing.TB) {
 	m := c.mustNewMember(t)
 
 	scheme := schemeFromTLSInfo(c.cfg.PeerTLS)
@@ -332,7 +336,7 @@ func (c *cluster) addMember(t *testing.T) {
 	c.waitMembersMatch(t, c.HTTPMembers())
 }
 
-func (c *cluster) addMemberByURL(t *testing.T, clientURL, peerURL string) error {
+func (c *cluster) addMemberByURL(t testing.TB, clientURL, peerURL string) error {
 	cc := MustNewHTTPClient(t, []string{clientURL}, c.cfg.ClientTLS)
 	ma := client.NewMembersAPI(cc)
 	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
@@ -348,17 +352,17 @@ func (c *cluster) addMemberByURL(t *testing.T, clientURL, peerURL string) error 
 	return nil
 }
 
-func (c *cluster) AddMember(t *testing.T) {
+func (c *cluster) AddMember(t testing.TB) {
 	c.addMember(t)
 }
 
-func (c *cluster) RemoveMember(t *testing.T, id uint64) {
+func (c *cluster) RemoveMember(t testing.TB, id uint64) {
 	if err := c.removeMember(t, id); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func (c *cluster) removeMember(t *testing.T, id uint64) error {
+func (c *cluster) removeMember(t testing.TB, id uint64) error {
 	// send remove request to the cluster
 	cc := MustNewHTTPClient(t, c.URLs(), c.cfg.ClientTLS)
 	ma := client.NewMembersAPI(cc)
@@ -389,7 +393,7 @@ func (c *cluster) removeMember(t *testing.T, id uint64) error {
 	return nil
 }
 
-func (c *cluster) Terminate(t *testing.T) {
+func (c *cluster) Terminate(t testing.TB) {
 	var wg sync.WaitGroup
 	wg.Add(len(c.Members))
 	for _, m := range c.Members {
@@ -401,7 +405,7 @@ func (c *cluster) Terminate(t *testing.T) {
 	wg.Wait()
 }
 
-func (c *cluster) waitMembersMatch(t *testing.T, membs []client.Member) {
+func (c *cluster) waitMembersMatch(t testing.TB, membs []client.Member) {
 	for _, u := range c.URLs() {
 		cc := MustNewHTTPClient(t, []string{u}, c.cfg.ClientTLS)
 		ma := client.NewMembersAPI(cc)
@@ -417,10 +421,10 @@ func (c *cluster) waitMembersMatch(t *testing.T, membs []client.Member) {
 	}
 }
 
-func (c *cluster) WaitLeader(t *testing.T) int { return c.waitLeader(t, c.Members) }
+func (c *cluster) WaitLeader(t testing.TB) int { return c.waitLeader(t, c.Members) }
 
 // waitLeader waits until given members agree on the same leader.
-func (c *cluster) waitLeader(t *testing.T, membs []*member) int {
+func (c *cluster) waitLeader(t testing.TB, membs []*member) int {
 	possibleLead := make(map[uint64]bool)
 	var lead uint64
 	for _, m := range membs {
@@ -513,14 +517,14 @@ func isMembersEqual(membs []client.Member, wmembs []client.Member) bool {
 	return reflect.DeepEqual(membs, wmembs)
 }
 
-func newLocalListener(t *testing.T) net.Listener {
+func newLocalListener(t testing.TB) net.Listener {
 	c := atomic.AddInt64(&localListenCount, 1)
 	// Go 1.8+ allows only numbers in port
 	addr := fmt.Sprintf("127.0.0.1:%05d%05d", c+basePort, os.Getpid())
 	return NewListenerWithAddr(t, addr)
 }
 
-func NewListenerWithAddr(t *testing.T, addr string) net.Listener {
+func NewListenerWithAddr(t testing.TB, addr string) net.Listener {
 	l, err := transport.NewUnixListener(addr)
 	if err != nil {
 		t.Fatal(err)
@@ -575,11 +579,12 @@ type memberConfig struct {
 	clientMaxCallSendMsgSize int
 	clientMaxCallRecvMsgSize int
 	useIP                    bool
+	leaseCheckpointInterval  time.Duration
 }
 
 // mustNewMember return an inited member with the given name. If peerTLS is
 // set, it will use https scheme to communicate between peers.
-func mustNewMember(t *testing.T, mcfg memberConfig) *member {
+func mustNewMember(t testing.TB, mcfg memberConfig) *member {
 	var err error
 	m := &member{}
 
@@ -665,22 +670,14 @@ func mustNewMember(t *testing.T, mcfg memberConfig) *member {
 	m.clientMaxCallSendMsgSize = mcfg.clientMaxCallSendMsgSize
 	m.clientMaxCallRecvMsgSize = mcfg.clientMaxCallRecvMsgSize
 	m.useIP = mcfg.useIP
+	m.LeaseCheckpointInterval = mcfg.leaseCheckpointInterval
 
 	m.InitialCorruptCheck = true
 
-	m.LoggerConfig = &zap.Config{
-		Level:       zap.NewAtomicLevelAt(zap.InfoLevel),
-		Development: false,
-		Sampling: &zap.SamplingConfig{
-			Initial:    100,
-			Thereafter: 100,
-		},
-		Encoding:      "json",
-		EncoderConfig: zap.NewProductionEncoderConfig(),
-
-		OutputPaths:      []string{"/dev/null"},
-		ErrorOutputPaths: []string{"/dev/null"},
-	}
+	lcfg := logutil.DefaultZapLoggerConfig
+	m.LoggerConfig = &lcfg
+	m.LoggerConfig.OutputPaths = []string{"/dev/null"}
+	m.LoggerConfig.ErrorOutputPaths = []string{"/dev/null"}
 	if os.Getenv("CLUSTER_DEBUG") != "" {
 		m.LoggerConfig.OutputPaths = []string{"stderr"}
 		m.LoggerConfig.ErrorOutputPaths = []string{"stderr"}
@@ -754,7 +751,7 @@ func NewClientV3(m *member) (*clientv3.Client, error) {
 
 // Clone returns a member with the same server configuration. The returned
 // member will not set PeerListeners and ClientListeners.
-func (m *member) Clone(t *testing.T) *member {
+func (m *member) Clone(t testing.TB) *member {
 	mm := &member{}
 	mm.ServerConfig = m.ServerConfig
 
@@ -954,14 +951,14 @@ func (m *member) Launch() error {
 	return nil
 }
 
-func (m *member) WaitOK(t *testing.T) {
+func (m *member) WaitOK(t testing.TB) {
 	m.WaitStarted(t)
 	for m.s.Leader() == 0 {
 		time.Sleep(tickDuration)
 	}
 }
 
-func (m *member) WaitStarted(t *testing.T) {
+func (m *member) WaitStarted(t testing.TB) {
 	cc := MustNewHTTPClient(t, []string{m.URL()}, m.ClientTLSInfo)
 	kapi := client.NewKeysAPI(cc)
 	for {
@@ -976,7 +973,7 @@ func (m *member) WaitStarted(t *testing.T) {
 	}
 }
 
-func WaitClientV3(t *testing.T, kv clientv3.KV) {
+func WaitClientV3(t testing.TB, kv clientv3.KV) {
 	timeout := time.Now().Add(requestTimeout)
 	var err error
 	for time.Now().Before(timeout) {
@@ -1030,7 +1027,7 @@ func (m *member) Close() {
 }
 
 // Stop stops the member, but the data dir of the member is preserved.
-func (m *member) Stop(t *testing.T) {
+func (m *member) Stop(t testing.TB) {
 	lg.Info(
 		"stopping a member",
 		zap.String("name", m.Name),
@@ -1064,7 +1061,7 @@ func (m *member) StopNotify() <-chan struct{} {
 }
 
 // Restart starts the member using the preserved data dir.
-func (m *member) Restart(t *testing.T) error {
+func (m *member) Restart(t testing.TB) error {
 	lg.Info(
 		"restarting a member",
 		zap.String("name", m.Name),
@@ -1102,7 +1099,7 @@ func (m *member) Restart(t *testing.T) error {
 }
 
 // Terminate stops the member and removes the data dir.
-func (m *member) Terminate(t *testing.T) {
+func (m *member) Terminate(t testing.TB) {
 	lg.Info(
 		"terminating a member",
 		zap.String("name", m.Name),
@@ -1152,7 +1149,7 @@ func (m *member) Metric(metricName string) (string, error) {
 }
 
 // InjectPartition drops connections from m to others, vice versa.
-func (m *member) InjectPartition(t *testing.T, others ...*member) {
+func (m *member) InjectPartition(t testing.TB, others ...*member) {
 	for _, other := range others {
 		m.s.CutPeer(other.s.ID())
 		other.s.CutPeer(m.s.ID())
@@ -1160,14 +1157,14 @@ func (m *member) InjectPartition(t *testing.T, others ...*member) {
 }
 
 // RecoverPartition recovers connections from m to others, vice versa.
-func (m *member) RecoverPartition(t *testing.T, others ...*member) {
+func (m *member) RecoverPartition(t testing.TB, others ...*member) {
 	for _, other := range others {
 		m.s.MendPeer(other.s.ID())
 		other.s.MendPeer(m.s.ID())
 	}
 }
 
-func MustNewHTTPClient(t *testing.T, eps []string, tls *transport.TLSInfo) client.Client {
+func MustNewHTTPClient(t testing.TB, eps []string, tls *transport.TLSInfo) client.Client {
 	cfgtls := transport.TLSInfo{}
 	if tls != nil {
 		cfgtls = *tls
@@ -1180,7 +1177,7 @@ func MustNewHTTPClient(t *testing.T, eps []string, tls *transport.TLSInfo) clien
 	return c
 }
 
-func mustNewTransport(t *testing.T, tlsInfo transport.TLSInfo) *http.Transport {
+func mustNewTransport(t testing.TB, tlsInfo transport.TLSInfo) *http.Transport {
 	// tick in integration test is short, so 1s dial timeout could play well.
 	tr, err := transport.NewTimeoutTransport(tlsInfo, time.Second, rafthttp.ConnReadTimeout, rafthttp.ConnWriteTimeout)
 	if err != nil {
@@ -1206,7 +1203,7 @@ type ClusterV3 struct {
 
 // NewClusterV3 returns a launched cluster with a grpc client connection
 // for each cluster member.
-func NewClusterV3(t *testing.T, cfg *ClusterConfig) *ClusterV3 {
+func NewClusterV3(t testing.TB, cfg *ClusterConfig) *ClusterV3 {
 	cfg.UseGRPC = true
 	if os.Getenv("CLIENT_DEBUG") != "" {
 		clientv3.SetLogger(grpclog.NewLoggerV2WithVerbosity(os.Stderr, os.Stderr, os.Stderr, 4))
@@ -1235,7 +1232,7 @@ func (c *ClusterV3) TakeClient(idx int) {
 	c.mu.Unlock()
 }
 
-func (c *ClusterV3) Terminate(t *testing.T) {
+func (c *ClusterV3) Terminate(t testing.TB) {
 	c.mu.Lock()
 	for _, client := range c.clients {
 		if client == nil {

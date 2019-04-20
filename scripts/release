@@ -56,7 +56,7 @@ main() {
   if [ ! -d "${reldir}/etcd" ]; then
     mkdir -p "${reldir}"
     cd "${reldir}"
-    git clone git@github.com:coreos/etcd.git --branch "${BRANCH}"
+    git clone git@github.com:etcd-io/etcd.git --branch "${BRANCH}"
   fi
   cd "${reldir}/etcd"
 
@@ -106,7 +106,7 @@ main() {
 
     # Push the version change if it's not already been pushed.
     if [ $(git rev-list --count "origin/${BRANCH}..${BRANCH}") -gt 0 ]; then
-      read -p "Push version bump up to ${VERSION} to github.com/coreos/etcd [y/N]? " confirm
+      read -p "Push version bump up to ${VERSION} to github.com/etcd-io/etcd [y/N]? " confirm
       [[ "${confirm,,}" == "y" ]] || exit 1
       git push
     fi
@@ -142,7 +142,7 @@ main() {
 
   # Sanity checks.
   ./release/etcd-${RELEASE_VERSION}-linux-amd64/etcd --version | grep -q "etcd Version: ${VERSION}"
-  ETCDCTL_API=3 ./release/etcd-${RELEASE_VERSION}-linux-amd64/etcdctl version | grep -q "etcdctl version: ${VERSION}"
+  ./release/etcd-${RELEASE_VERSION}-linux-amd64/etcdctl version | grep -q "etcdctl version: ${VERSION}"
 
   # Upload artifacts.
   if [ "${NO_UPLOAD}" == 1 ]; then
@@ -188,9 +188,9 @@ main() {
   # TODO: test
   # docker run --rm --name etcd-gcr-${RELEASE_VERSION} gcr.io/etcd-development/etcd:${RELEASE_VERSION};
   # docker exec etcd-gcr-${RELEASE_VERSION} /bin/sh -c "/usr/local/bin/etcd --version"
-  # docker exec etcd-gcr-${RELEASE_VERSION} /bin/sh -c "ETCDCTL_API=3 /usr/local/bin/etcdctl version"
-  # docker exec etcd-gcr-${RELEASE_VERSION} /bin/sh -c "ETCDCTL_API=3 /usr/local/bin/etcdctl put foo bar"
-  # docker exec etcd-gcr-${RELEASE_VERSION} /bin/sh -c "ETCDCTL_API=3 /usr/local/bin/etcdctl get foo"
+  # docker exec etcd-gcr-${RELEASE_VERSION} /bin/sh -c "/usr/local/bin/etcdctl version"
+  # docker exec etcd-gcr-${RELEASE_VERSION} /bin/sh -c "/usr/local/bin/etcdctl put foo bar"
+  # docker exec etcd-gcr-${RELEASE_VERSION} /bin/sh -c "/usr/local/bin/etcdctl get foo"
 
   # Bump version to next development version.
   git checkout -q "${BRANCH}" # Since we might be on a checkout of the remote version tag.
@@ -202,7 +202,7 @@ main() {
     git add version/version.go
     git commit -m "version: bump up to ${VERSION}+git"
     git diff --staged
-    read -p "Push version bump up to ${VERSION}+git to github.com/coreos/etcd [y/N]? " confirm
+    read -p "Push version bump up to ${VERSION}+git to github.com/etcd-io/etcd [y/N]? " confirm
     [[ "${confirm,,}" == "y" ]] || exit 1
     git push
   fi

@@ -25,7 +25,7 @@ import (
 	"sync"
 	"time"
 
-	pb "github.com/coreos/etcd/raft/raftpb"
+	pb "go.etcd.io/etcd/raft/raftpb"
 )
 
 // None is a placeholder node ID used when there is no leader.
@@ -148,12 +148,20 @@ type Config struct {
 	// applied entries. This is a very application dependent configuration.
 	Applied uint64
 
-	// MaxSizePerMsg limits the max size of each append message. Smaller value
-	// lowers the raft recovery cost(initial probing and message lost during normal
-	// operation). On the other side, it might affect the throughput during normal
-	// replication. Note: math.MaxUint64 for unlimited, 0 for at most one entry per
-	// message.
+	// MaxSizePerMsg limits the max byte size of each append message. Smaller
+	// value lowers the raft recovery cost(initial probing and message lost
+	// during normal operation). On the other side, it might affect the
+	// throughput during normal replication. Note: math.MaxUint64 for unlimited,
+	// 0 for at most one entry per message.
 	MaxSizePerMsg uint64
+	// MaxCommittedSizePerReady limits the size of the committed entries which
+	// can be applied.
+	MaxCommittedSizePerReady uint64
+	// MaxUncommittedEntriesSize limits the aggregate byte size of the
+	// uncommitted entries that may be appended to a leader's log. Once this
+	// limit is exceeded, proposals will begin to return ErrProposalDropped
+	// errors. Note: 0 for no limit.
+	MaxUncommittedEntriesSize uint64
 	// MaxInflightMsgs limits the max number of in-flight append messages during
 	// optimistic replication phase. The application transportation layer usually
 	// has its own sending buffer over TCP/UDP. Setting MaxInflightMsgs to avoid
@@ -215,6 +223,16 @@ func (c *Config) validate() error {
 		return errors.New("storage cannot be nil")
 	}
 
+	if c.MaxUncommittedEntriesSize == 0 {
+		c.MaxUncommittedEntriesSize = noLimit
+	}
+
+	// default MaxCommittedSizePerReady to MaxSizePerMsg because they were
+	// previously the same parameter.
+	if c.MaxCommittedSizePerReady == 0 {
+		c.MaxCommittedSizePerReady = c.MaxSizePerMsg
+	}
+
 	if c.MaxInflightMsgs <= 0 {
 		return errors.New("max inflight messages must be greater than 0")
 	}
@@ -241,10 +259,12 @@ type raft struct {
 	// the log
 	raftLog *raftLog
 
-	maxInflight int
-	maxMsgSize  uint64
-	prs         map[uint64]*Progress
-	learnerPrs  map[uint64]*Progress
+	maxMsgSize         uint64
+	maxUncommittedSize uint64
+	maxInflight        int
+	prs                map[uint64]*Progress
+	learnerPrs         map[uint64]*Progress
+	matchBuf           uint64Slice
 
 	state StateType
 
@@ -267,6 +287,10 @@ type raft struct {
 	// be proposed if the leader's applied index is greater than this
 	// value.
 	pendingConfIndex uint64
+	// an estimate of the size of the uncommitted tail of the Raft log. Used to
+	// prevent unbounded log growth. Only maintained by the leader. Reset on
+	// term changes.
+	uncommittedSize uint64
 
 	readOnly *readOnly
 
@@ -301,7 +325,7 @@ func newRaft(c *Config) *raft {
 	if err := c.validate(); err != nil {
 		panic(err.Error())
 	}
-	raftlog := newLog(c.Storage, c.Logger)
+	raftlog := newLogWithSize(c.Storage, c.Logger, c.MaxCommittedSizePerReady)
 	hs, cs, err := c.Storage.InitialState()
 	if err != nil {
 		panic(err) // TODO(bdarnell)
@@ -325,6 +349,7 @@ func newRaft(c *Config) *raft {
 		raftLog:                   raftlog,
 		maxMsgSize:                c.MaxSizePerMsg,
 		maxInflight:               c.MaxInflightMsgs,
+		maxUncommittedSize:        c.MaxUncommittedEntriesSize,
 		prs:                       make(map[uint64]*Progress),
 		learnerPrs:                make(map[uint64]*Progress),
 		electionTimeout:           c.ElectionTick,
@@ -440,22 +465,35 @@ func (r *raft) getProgress(id uint64) *Progress {
 	return r.learnerPrs[id]
 }
 
-// sendAppend sends RPC, with entries to the given peer.
+// sendAppend sends an append RPC with new entries (if any) and the
+// current commit index to the given peer.
 func (r *raft) sendAppend(to uint64) {
+	r.maybeSendAppend(to, true)
+}
+
+// maybeSendAppend sends an append RPC with new entries to the given peer,
+// if necessary. Returns true if a message was sent. The sendIfEmpty
+// argument controls whether messages with no entries will be sent
+// ("empty" messages are useful to convey updated Commit indexes, but
+// are undesirable when we're sending multiple messages in a batch).
+func (r *raft) maybeSendAppend(to uint64, sendIfEmpty bool) bool {
 	pr := r.getProgress(to)
 	if pr.IsPaused() {
-		return
+		return false
 	}
 	m := pb.Message{}
 	m.To = to
 
 	term, errt := r.raftLog.term(pr.Next - 1)
 	ents, erre := r.raftLog.entries(pr.Next, r.maxMsgSize)
+	if len(ents) == 0 && !sendIfEmpty {
+		return false
+	}
 
 	if errt != nil || erre != nil { // send snapshot if we failed to get term or entries
 		if !pr.RecentActive {
 			r.logger.Debugf("ignore sending snapshot to %x since it is not recently active", to)
-			return
+			return false
 		}
 
 		m.Type = pb.MsgSnap
@@ -463,7 +501,7 @@ func (r *raft) sendAppend(to uint64) {
 		if err != nil {
 			if err == ErrSnapshotTemporarilyUnavailable {
 				r.logger.Debugf("%x failed to send snapshot to %x because snapshot is temporarily unavailable", r.id, to)
-				return
+				return false
 			}
 			panic(err) // TODO(bdarnell)
 		}
@@ -497,9 +535,10 @@ func (r *raft) sendAppend(to uint64) {
 		}
 	}
 	r.send(m)
+	return true
 }
 
-// sendHeartbeat sends an empty MsgApp
+// sendHeartbeat sends a heartbeat RPC to the given peer.
 func (r *raft) sendHeartbeat(to uint64, ctx []byte) {
 	// Attach the commit as min(to.matched, r.committed).
 	// When the leader sends out heartbeat message,
@@ -563,13 +602,19 @@ func (r *raft) bcastHeartbeatWithCtx(ctx []byte) {
 // the commit index changed (in which case the caller should call
 // r.bcastAppend).
 func (r *raft) maybeCommit() bool {
-	// TODO(bmizerany): optimize.. Currently naive
-	mis := make(uint64Slice, 0, len(r.prs))
-	for _, p := range r.prs {
-		mis = append(mis, p.Match)
+	// Preserving matchBuf across calls is an optimization
+	// used to avoid allocating a new slice on each call.
+	if cap(r.matchBuf) < len(r.prs) {
+		r.matchBuf = make(uint64Slice, len(r.prs))
 	}
-	sort.Sort(sort.Reverse(mis))
-	mci := mis[r.quorum()-1]
+	mis := r.matchBuf[:len(r.prs)]
+	idx := 0
+	for _, p := range r.prs {
+		mis[idx] = p.Match
+		idx++
+	}
+	sort.Sort(mis)
+	mci := mis[len(mis)-r.quorum()]
 	return r.raftLog.maybeCommit(mci, r.Term)
 }
 
@@ -595,20 +640,31 @@ func (r *raft) reset(term uint64) {
 	})
 
 	r.pendingConfIndex = 0
+	r.uncommittedSize = 0
 	r.readOnly = newReadOnly(r.readOnly.option)
 }
 
-func (r *raft) appendEntry(es ...pb.Entry) {
+func (r *raft) appendEntry(es ...pb.Entry) (accepted bool) {
 	li := r.raftLog.lastIndex()
 	for i := range es {
 		es[i].Term = r.Term
 		es[i].Index = li + 1 + uint64(i)
+	}
+	// Track the size of this uncommitted proposal.
+	if !r.increaseUncommittedSize(es) {
+		r.logger.Debugf(
+			"%x appending new entries to log would exceed uncommitted entry size limit; dropping proposal",
+			r.id,
+		)
+		// Drop the proposal.
+		return false
 	}
 	// use latest "last" index after truncate/append
 	li = r.raftLog.append(es...)
 	r.getProgress(r.id).maybeUpdate(li)
 	// Regardless of maybeCommit's return, our caller will call bcastAppend.
 	r.maybeCommit()
+	return true
 }
 
 // tickElection is run by followers and candidates after r.electionTimeout.
@@ -680,6 +736,7 @@ func (r *raft) becomePreCandidate() {
 	r.step = stepCandidate
 	r.votes = make(map[uint64]bool)
 	r.tick = r.tickElection
+	r.lead = None
 	r.state = StatePreCandidate
 	r.logger.Infof("%x became pre-candidate at term %d", r.id, r.Term)
 }
@@ -694,6 +751,11 @@ func (r *raft) becomeLeader() {
 	r.tick = r.tickHeartbeat
 	r.lead = r.id
 	r.state = StateLeader
+	// Followers enter replicate mode when they've been successfully probed
+	// (perhaps after having received a snapshot as a result). The leader is
+	// trivially in this state. Note that r.reset() has initialized this
+	// progress with the last index already.
+	r.prs[r.id].becomeReplicate()
 
 	// Conservatively set the pendingConfIndex to the last index in the
 	// log. There may or may not be a pending config change, but it's
@@ -702,7 +764,16 @@ func (r *raft) becomeLeader() {
 	// could be expensive.
 	r.pendingConfIndex = r.raftLog.lastIndex()
 
-	r.appendEntry(pb.Entry{Data: nil})
+	emptyEnt := pb.Entry{Data: nil}
+	if !r.appendEntry(emptyEnt) {
+		// This won't happen because we just called reset() above.
+		r.logger.Panic("empty entry was dropped")
+	}
+	// As a special case, don't count the initial empty entry towards the
+	// uncommitted log quota. This is because we want to preserve the
+	// behavior of allowing one entry larger than quota if the current
+	// usage is zero.
+	r.reduceUncommittedSize([]pb.Entry{emptyEnt})
 	r.logger.Infof("%x became leader at term %d", r.id, r.Term)
 }
 
@@ -876,9 +947,9 @@ func (r *raft) Step(m pb.Message) error {
 			r.logger.Infof("%x [logterm: %d, index: %d, vote: %x] cast %s for %x [logterm: %d, index: %d] at term %d",
 				r.id, r.raftLog.lastTerm(), r.raftLog.lastIndex(), r.Vote, m.Type, m.From, m.LogTerm, m.Index, r.Term)
 			// When responding to Msg{Pre,}Vote messages we include the term
-			// from the message, not the local term. To see why consider the
+			// from the message, not the local term. To see why, consider the
 			// case where a single node was previously partitioned away and
-			// it's local term is now of date. If we include the local term
+			// it's local term is now out of date. If we include the local term
 			// (recall that for pre-votes we don't update the local term), the
 			// (pre-)campaigning node on the other end will proceed to ignore
 			// the message (it ignores all out of date messages).
@@ -945,7 +1016,10 @@ func stepLeader(r *raft, m pb.Message) error {
 				}
 			}
 		}
-		r.appendEntry(m.Entries...)
+
+		if !r.appendEntry(m.Entries...) {
+			return ErrProposalDropped
+		}
 		r.bcastAppend()
 		return nil
 	case pb.MsgReadIndex:
@@ -970,8 +1044,12 @@ func stepLeader(r *raft, m pb.Message) error {
 					r.send(pb.Message{To: m.From, Type: pb.MsgReadIndexResp, Index: ri, Entries: m.Entries})
 				}
 			}
-		} else {
-			r.readStates = append(r.readStates, ReadState{Index: r.raftLog.committed, RequestCtx: m.Entries[0].Data})
+		} else { // there is only one voting member (the leader) in the cluster
+			if m.From == None || m.From == r.id { // from leader itself
+				r.readStates = append(r.readStates, ReadState{Index: r.raftLog.committed, RequestCtx: m.Entries[0].Data})
+			} else { // from learner member
+				r.send(pb.Message{To: m.From, Type: pb.MsgReadIndexResp, Index: r.raftLog.committed, Entries: m.Entries})
+			}
 		}
 
 		return nil
@@ -1005,7 +1083,13 @@ func stepLeader(r *raft, m pb.Message) error {
 					pr.becomeReplicate()
 				case pr.State == ProgressStateSnapshot && pr.needSnapshotAbort():
 					r.logger.Debugf("%x snapshot aborted, resumed sending replication messages to %x [%s]", r.id, m.From, pr)
+					// Transition back to replicating state via probing state
+					// (which takes the snapshot into account). If we didn't
+					// move to replicating state, that would only happen with
+					// the next round of appends (but there may not be a next
+					// round for a while, exposing an inconsistent RaftStatus).
 					pr.becomeProbe()
+					pr.becomeReplicate()
 				case pr.State == ProgressStateReplicate:
 					pr.ins.freeTo(m.Index)
 				}
@@ -1013,9 +1097,17 @@ func stepLeader(r *raft, m pb.Message) error {
 				if r.maybeCommit() {
 					r.bcastAppend()
 				} else if oldPaused {
-					// update() reset the wait state on this node. If we had delayed sending
-					// an update before, send it now.
+					// If we were paused before, this node may be missing the
+					// latest commit index, so send it.
 					r.sendAppend(m.From)
+				}
+				// We've updated flow control information above, which may
+				// allow us to send multiple (size-limited) in-flight messages
+				// at once (such as when transitioning from probe to
+				// replicate, or when freeTo() covers multiple messages). If
+				// we have more entries to send, send as many messages as we
+				// can (without sending empty messages for the commit index)
+				for r.maybeSendAppend(m.From, false) {
 				}
 				// Transfer leadership is in progress.
 				if m.From == r.leadTransferee && pr.Match == r.raftLog.lastIndex() {
@@ -1431,6 +1523,49 @@ func (r *raft) sendTimeoutNow(to uint64) {
 
 func (r *raft) abortLeaderTransfer() {
 	r.leadTransferee = None
+}
+
+// increaseUncommittedSize computes the size of the proposed entries and
+// determines whether they would push leader over its maxUncommittedSize limit.
+// If the new entries would exceed the limit, the method returns false. If not,
+// the increase in uncommitted entry size is recorded and the method returns
+// true.
+func (r *raft) increaseUncommittedSize(ents []pb.Entry) bool {
+	var s uint64
+	for _, e := range ents {
+		s += uint64(PayloadSize(e))
+	}
+
+	if r.uncommittedSize > 0 && r.uncommittedSize+s > r.maxUncommittedSize {
+		// If the uncommitted tail of the Raft log is empty, allow any size
+		// proposal. Otherwise, limit the size of the uncommitted tail of the
+		// log and drop any proposal that would push the size over the limit.
+		return false
+	}
+	r.uncommittedSize += s
+	return true
+}
+
+// reduceUncommittedSize accounts for the newly committed entries by decreasing
+// the uncommitted entry size limit.
+func (r *raft) reduceUncommittedSize(ents []pb.Entry) {
+	if r.uncommittedSize == 0 {
+		// Fast-path for followers, who do not track or enforce the limit.
+		return
+	}
+
+	var s uint64
+	for _, e := range ents {
+		s += uint64(PayloadSize(e))
+	}
+	if s > r.uncommittedSize {
+		// uncommittedSize may underestimate the size of the uncommitted Raft
+		// log tail but will never overestimate it. Saturate at 0 instead of
+		// allowing overflow.
+		r.uncommittedSize = 0
+	} else {
+		r.uncommittedSize -= s
+	}
 }
 
 func numOfPendingConf(ents []pb.Entry) int {

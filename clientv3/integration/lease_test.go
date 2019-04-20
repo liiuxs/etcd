@@ -22,11 +22,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/coreos/etcd/clientv3"
-	"github.com/coreos/etcd/clientv3/concurrency"
-	"github.com/coreos/etcd/etcdserver/api/v3rpc/rpctypes"
-	"github.com/coreos/etcd/integration"
-	"github.com/coreos/etcd/pkg/testutil"
+	"go.etcd.io/etcd/clientv3"
+	"go.etcd.io/etcd/clientv3/concurrency"
+	"go.etcd.io/etcd/etcdserver/api/v3rpc/rpctypes"
+	"go.etcd.io/etcd/integration"
+	"go.etcd.io/etcd/pkg/testutil"
 
 	"google.golang.org/grpc"
 )
@@ -291,6 +291,9 @@ func TestLeaseGrantErrConnClosed(t *testing.T) {
 
 	cli := clus.Client(0)
 	clus.TakeClient(0)
+	if err := cli.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	donec := make(chan struct{})
 	go func() {
@@ -303,14 +306,53 @@ func TestLeaseGrantErrConnClosed(t *testing.T) {
 		}
 	}()
 
-	if err := cli.Close(); err != nil {
-		t.Fatal(err)
-	}
-
 	select {
 	case <-time.After(integration.RequestWaitTimeout):
 		t.Fatal("le.Grant took too long")
 	case <-donec:
+	}
+}
+
+// TestLeaseKeepAliveFullResponseQueue ensures when response
+// queue is full thus dropping keepalive response sends,
+// keepalive request is sent with the same rate of TTL / 3.
+func TestLeaseKeepAliveFullResponseQueue(t *testing.T) {
+	defer testutil.AfterTest(t)
+
+	clus := integration.NewClusterV3(t, &integration.ClusterConfig{Size: 1})
+	defer clus.Terminate(t)
+
+	lapi := clus.Client(0)
+
+	// expect lease keepalive every 10-second
+	lresp, err := lapi.Grant(context.Background(), 30)
+	if err != nil {
+		t.Fatalf("failed to create lease %v", err)
+	}
+	id := lresp.ID
+
+	old := clientv3.LeaseResponseChSize
+	defer func() {
+		clientv3.LeaseResponseChSize = old
+	}()
+	clientv3.LeaseResponseChSize = 0
+
+	// never fetch from response queue, and let it become full
+	_, err = lapi.KeepAlive(context.Background(), id)
+	if err != nil {
+		t.Fatalf("failed to keepalive lease %v", err)
+	}
+
+	// TTL should not be refreshed after 3 seconds
+	// expect keepalive to be triggered after TTL/3
+	time.Sleep(3 * time.Second)
+
+	tr, terr := lapi.TimeToLive(context.Background(), id)
+	if terr != nil {
+		t.Fatalf("failed to get lease information %v", terr)
+	}
+	if tr.TTL >= 29 {
+		t.Errorf("unexpected kept-alive lease TTL %d", tr.TTL)
 	}
 }
 
@@ -782,8 +824,11 @@ func TestLeaseWithRequireLeader(t *testing.T) {
 	// kaReqLeader may issue multiple requests while waiting for the first
 	// response from proxy server; drain any stray keepalive responses
 	time.Sleep(100 * time.Millisecond)
-	for len(kaReqLeader) > 0 {
+	for {
 		<-kaReqLeader
+		if len(kaReqLeader) == 0 {
+			break
+		}
 	}
 
 	select {

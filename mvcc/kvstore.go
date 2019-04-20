@@ -25,10 +25,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/coreos/etcd/lease"
-	"github.com/coreos/etcd/mvcc/backend"
-	"github.com/coreos/etcd/mvcc/mvccpb"
-	"github.com/coreos/etcd/pkg/schedule"
+	"go.etcd.io/etcd/lease"
+	"go.etcd.io/etcd/mvcc/backend"
+	"go.etcd.io/etcd/mvcc/mvccpb"
+	"go.etcd.io/etcd/pkg/schedule"
 
 	"github.com/coreos/pkg/capnslog"
 	"go.uber.org/zap"
@@ -47,7 +47,7 @@ var (
 	ErrCanceled  = errors.New("mvcc: watcher is canceled")
 	ErrClosed    = errors.New("mvcc: closed")
 
-	plog = capnslog.NewPackageLogger("github.com/coreos/etcd", "mvcc")
+	plog = capnslog.NewPackageLogger("go.etcd.io/etcd", "mvcc")
 )
 
 const (
@@ -139,6 +139,8 @@ func NewStore(lg *zap.Logger, b backend.Backend, le lease.Lessor, ig ConsistentI
 	tx.Unlock()
 	s.b.ForceCommit()
 
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := s.restore(); err != nil {
 		// TODO: return the error instead of panic here?
 		panic("failed to recover store from backend")
@@ -194,8 +196,8 @@ func (s *store) HashByRev(rev int64) (hash uint32, currentRev int64, compactRev 
 	keep := s.kvindex.Keep(rev)
 
 	tx := s.b.ReadTx()
-	tx.Lock()
-	defer tx.Unlock()
+	tx.RLock()
+	defer tx.RUnlock()
 	s.mu.RUnlock()
 
 	upper := revision{main: rev + 1}
@@ -225,24 +227,19 @@ func (s *store) HashByRev(rev int64) (hash uint32, currentRev int64, compactRev 
 	return hash, currentRev, compactRev, err
 }
 
-func (s *store) Compact(rev int64) (<-chan struct{}, error) {
-	s.mu.Lock()
+func (s *store) updateCompactRev(rev int64) (<-chan struct{}, error) {
 	s.revMu.Lock()
 	if rev <= s.compactMainRev {
 		ch := make(chan struct{})
 		f := func(ctx context.Context) { s.compactBarrier(ctx, ch) }
 		s.fifoSched.Schedule(f)
-		s.mu.Unlock()
 		s.revMu.Unlock()
 		return ch, ErrCompacted
 	}
 	if rev > s.currentRev {
-		s.mu.Unlock()
 		s.revMu.Unlock()
 		return nil, ErrFutureRev
 	}
-
-	start := time.Now()
 
 	s.compactMainRev = rev
 
@@ -256,8 +253,13 @@ func (s *store) Compact(rev int64) (<-chan struct{}, error) {
 	// ensure that desired compaction is persisted
 	s.b.ForceCommit()
 
-	s.mu.Unlock()
 	s.revMu.Unlock()
+
+	return nil, nil
+}
+
+func (s *store) compact(rev int64) (<-chan struct{}, error) {
+	start := time.Now()
 	keep := s.kvindex.Compact(rev)
 	ch := make(chan struct{})
 	var j = func(ctx context.Context) {
@@ -276,6 +278,29 @@ func (s *store) Compact(rev int64) (<-chan struct{}, error) {
 
 	indexCompactionPauseMs.Observe(float64(time.Since(start) / time.Millisecond))
 	return ch, nil
+}
+
+func (s *store) compactLockfree(rev int64) (<-chan struct{}, error) {
+	ch, err := s.updateCompactRev(rev)
+	if nil != err {
+		return ch, err
+	}
+
+	return s.compact(rev)
+}
+
+func (s *store) Compact(rev int64) (<-chan struct{}, error) {
+	s.mu.Lock()
+
+	ch, err := s.updateCompactRev(rev)
+
+	if err != nil {
+		s.mu.Unlock()
+		return ch, err
+	}
+	s.mu.Unlock()
+
+	return s.compact(rev)
 }
 
 // DefaultIgnores is a map of keys to ignore in hash checking.
@@ -415,7 +440,7 @@ func (s *store) restore() error {
 	tx.Unlock()
 
 	if scheduledCompact != 0 {
-		s.Compact(scheduledCompact)
+		s.compactLockfree(scheduledCompact)
 
 		if s.lg != nil {
 			s.lg.Info(

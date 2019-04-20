@@ -22,11 +22,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/coreos/etcd/etcdserver/api/v3rpc/rpctypes"
-	pb "github.com/coreos/etcd/etcdserver/etcdserverpb"
-	"github.com/coreos/etcd/mvcc"
-	"github.com/coreos/etcd/mvcc/backend"
-	"github.com/coreos/etcd/pkg/testutil"
+	"go.etcd.io/etcd/etcdserver/api/v3rpc/rpctypes"
+	pb "go.etcd.io/etcd/etcdserver/etcdserverpb"
+	"go.etcd.io/etcd/mvcc"
+	"go.etcd.io/etcd/mvcc/backend"
+	"go.etcd.io/etcd/pkg/testutil"
 
 	"go.uber.org/zap"
 )
@@ -88,8 +88,8 @@ func TestV3StorageQuotaApply(t *testing.T) {
 		}
 	}
 
-	ctx, close := context.WithTimeout(context.TODO(), RequestWaitTimeout)
-	defer close()
+	ctx, cancel := context.WithTimeout(context.TODO(), RequestWaitTimeout)
+	defer cancel()
 
 	// small quota machine should reject put
 	if _, err := kvc0.Put(ctx, &pb.PutRequest{Key: key, Value: smallbuf}); err == nil {

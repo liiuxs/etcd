@@ -23,11 +23,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/coreos/etcd/clientv3"
-	"github.com/coreos/etcd/clientv3/concurrency"
-	"github.com/coreos/etcd/clientv3/leasing"
-	"github.com/coreos/etcd/integration"
-	"github.com/coreos/etcd/pkg/testutil"
+	"go.etcd.io/etcd/clientv3"
+	"go.etcd.io/etcd/clientv3/concurrency"
+	"go.etcd.io/etcd/clientv3/leasing"
+	"go.etcd.io/etcd/integration"
+	"go.etcd.io/etcd/pkg/testutil"
 )
 
 func TestLeasingPutGet(t *testing.T) {
@@ -310,7 +310,7 @@ func TestLeasingRevGet(t *testing.T) {
 		t.Fatal(gerr)
 	}
 	if len(getResp.Kvs) != 1 || string(getResp.Kvs[0].Value) != "abc" {
-		t.Fatalf(`expeted "k"->"abc" at rev=%d, got response %+v`, putResp.Header.Revision, getResp)
+		t.Fatalf(`expected "k"->"abc" at rev=%d, got response %+v`, putResp.Header.Revision, getResp)
 	}
 	// check current revision
 	getResp, gerr = lkv.Get(context.TODO(), "k")
@@ -318,7 +318,7 @@ func TestLeasingRevGet(t *testing.T) {
 		t.Fatal(gerr)
 	}
 	if len(getResp.Kvs) != 1 || string(getResp.Kvs[0].Value) != "def" {
-		t.Fatalf(`expeted "k"->"abc" at rev=%d, got response %+v`, putResp.Header.Revision, getResp)
+		t.Fatalf(`expected "k"->"abc" at rev=%d, got response %+v`, putResp.Header.Revision, getResp)
 	}
 }
 
@@ -1644,6 +1644,7 @@ func TestLeasingReconnectTxn(t *testing.T) {
 			clus.Members[0].DropConnections()
 			time.Sleep(time.Millisecond)
 		}
+		time.Sleep(10 * time.Millisecond)
 	}()
 
 	_, lerr := lkv.Txn(context.TODO()).

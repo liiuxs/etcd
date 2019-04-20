@@ -19,11 +19,11 @@ import (
 	"os"
 	"time"
 
-	"github.com/coreos/etcd/etcdserver/api/snap"
-	"github.com/coreos/etcd/lease"
-	"github.com/coreos/etcd/mvcc"
-	"github.com/coreos/etcd/mvcc/backend"
-	"github.com/coreos/etcd/raft/raftpb"
+	"go.etcd.io/etcd/etcdserver/api/snap"
+	"go.etcd.io/etcd/lease"
+	"go.etcd.io/etcd/mvcc"
+	"go.etcd.io/etcd/mvcc/backend"
+	"go.etcd.io/etcd/raft/raftpb"
 
 	"go.uber.org/zap"
 )
@@ -31,6 +31,19 @@ import (
 func newBackend(cfg ServerConfig) backend.Backend {
 	bcfg := backend.DefaultBackendConfig()
 	bcfg.Path = cfg.backendPath()
+	if cfg.BackendBatchLimit != 0 {
+		bcfg.BatchLimit = cfg.BackendBatchLimit
+		if cfg.Logger != nil {
+			cfg.Logger.Info("setting backend batch limit", zap.Int("batch limit", cfg.BackendBatchLimit))
+		}
+	}
+	if cfg.BackendBatchInterval != 0 {
+		bcfg.BatchInterval = cfg.BackendBatchInterval
+		if cfg.Logger != nil {
+			cfg.Logger.Info("setting backend batch interval", zap.Duration("batch interval", cfg.BackendBatchInterval))
+		}
+	}
+	bcfg.BackendFreelistType = cfg.BackendFreelistType
 	bcfg.Logger = cfg.Logger
 	if cfg.QuotaBackendBytes > 0 && cfg.QuotaBackendBytes != DefaultQuotaBytes {
 		// permit 10% excess over quota for disarm

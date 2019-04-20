@@ -20,14 +20,15 @@ import (
 	"io/ioutil"
 	"math"
 	"os"
+	"path"
 	"path/filepath"
 	"reflect"
 	"testing"
 
-	"github.com/coreos/etcd/pkg/fileutil"
-	"github.com/coreos/etcd/pkg/pbutil"
-	"github.com/coreos/etcd/raft/raftpb"
-	"github.com/coreos/etcd/wal/walpb"
+	"go.etcd.io/etcd/pkg/fileutil"
+	"go.etcd.io/etcd/pkg/pbutil"
+	"go.etcd.io/etcd/raft/raftpb"
+	"go.etcd.io/etcd/wal/walpb"
 
 	"go.uber.org/zap"
 )
@@ -186,6 +187,57 @@ func TestOpenAtIndex(t *testing.T) {
 	}
 }
 
+// TestVerify tests that Verify throws a non-nil error when the WAL is corrupted.
+// The test creates a WAL directory and cuts out multiple WAL files. Then
+// it corrupts one of the files by completely truncating it.
+func TestVerify(t *testing.T) {
+	walDir, err := ioutil.TempDir(os.TempDir(), "waltest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(walDir)
+
+	// create WAL
+	w, err := Create(zap.NewExample(), walDir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+
+	// make 5 separate files
+	for i := 0; i < 5; i++ {
+		es := []raftpb.Entry{{Index: uint64(i), Data: []byte("waldata" + string(i+1))}}
+		if err = w.Save(raftpb.HardState{}, es); err != nil {
+			t.Fatal(err)
+		}
+		if err = w.cut(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// to verify the WAL is not corrupted at this point
+	err = Verify(zap.NewExample(), walDir, walpb.Snapshot{})
+	if err != nil {
+		t.Errorf("expected a nil error, got %v", err)
+	}
+
+	walFiles, err := ioutil.ReadDir(walDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// corrupt the WAL by truncating one of the WAL files completely
+	err = os.Truncate(path.Join(walDir, walFiles[2].Name()), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = Verify(zap.NewExample(), walDir, walpb.Snapshot{})
+	if err == nil {
+		t.Error("expected a non-nil error, got nil")
+	}
+}
+
 // TODO: split it into smaller tests for better readability
 func TestCut(t *testing.T) {
 	p, err := ioutil.TempDir(os.TempDir(), "waltest")
@@ -273,7 +325,7 @@ func TestSaveWithCut(t *testing.T) {
 	const EntrySize int = 500
 	SegmentSizeBytes = 2 * 1024
 	defer func() { SegmentSizeBytes = restoreLater }()
-	var index uint64 = 0
+	index := uint64(0)
 	for totalSize := 0; totalSize < int(SegmentSizeBytes); totalSize += EntrySize {
 		ents := []raftpb.Entry{{Index: index, Term: 1, Data: bigData}}
 		if err = w.Save(state, ents); err != nil {

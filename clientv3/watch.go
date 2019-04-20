@@ -16,13 +16,14 @@ package clientv3
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 
-	v3rpc "github.com/coreos/etcd/etcdserver/api/v3rpc/rpctypes"
-	pb "github.com/coreos/etcd/etcdserver/etcdserverpb"
-	mvccpb "github.com/coreos/etcd/mvcc/mvccpb"
+	v3rpc "go.etcd.io/etcd/etcdserver/api/v3rpc/rpctypes"
+	pb "go.etcd.io/etcd/etcdserver/etcdserverpb"
+	mvccpb "go.etcd.io/etcd/mvcc/mvccpb"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -67,8 +68,11 @@ type Watcher interface {
 	// TODO: explicitly set context error in the last "WatchResponse" message and close channel?
 	// Currently, client contexts are overwritten with "valCtx" that never closes.
 	// TODO(v3.4): configure watch retry policy, limit maximum retry number
-	// (see https://github.com/coreos/etcd/issues/8980)
+	// (see https://github.com/etcd-io/etcd/issues/8980)
 	Watch(ctx context.Context, key string, opts ...OpOption) WatchChan
+
+	// RequestProgress requests a progress notify response be sent in all watch channels.
+	RequestProgress(ctx context.Context) error
 
 	// Close closes the watcher and cancels all watch requests.
 	Close() error
@@ -156,7 +160,7 @@ type watchGrpcStream struct {
 	resuming []*watcherStream
 
 	// reqc sends a watch request from Watch() to the main goroutine
-	reqc chan *watchRequest
+	reqc chan watchStreamRequest
 	// respc receives data from the watch client
 	respc chan *pb.WatchResponse
 	// donec closes to broadcast shutdown
@@ -172,6 +176,11 @@ type watchGrpcStream struct {
 	resumec chan struct{}
 	// closeErr is the error that closed the watch stream
 	closeErr error
+}
+
+// watchStreamRequest is a union of the supported watch request operation types
+type watchStreamRequest interface {
+	toPB() *pb.WatchRequest
 }
 
 // watchRequest is issued by the subscriber to start a new watcher
@@ -196,6 +205,10 @@ type watchRequest struct {
 	prevKV bool
 	// retc receives a chan WatchResponse once the watcher is established
 	retc chan chan WatchResponse
+}
+
+// progressRequest is issued by the subscriber to request watch progress
+type progressRequest struct {
 }
 
 // watcherStream represents a registered watcher
@@ -255,7 +268,7 @@ func (w *watcher) newWatcherGrpcStream(inctx context.Context) *watchGrpcStream {
 		cancel:     cancel,
 		substreams: make(map[int64]*watcherStream),
 		respc:      make(chan *pb.WatchResponse),
-		reqc:       make(chan *watchRequest),
+		reqc:       make(chan watchStreamRequest),
 		donec:      make(chan struct{}),
 		errc:       make(chan error, 1),
 		closingc:   make(chan *watcherStream),
@@ -321,7 +334,7 @@ func (w *watcher) Watch(ctx context.Context, key string, opts ...OpOption) Watch
 	case <-wr.ctx.Done():
 	case <-donec:
 		if wgs.closeErr != nil {
-			closeCh <- WatchResponse{closeErr: wgs.closeErr}
+			closeCh <- WatchResponse{Canceled: true, closeErr: wgs.closeErr}
 			break
 		}
 		// retry; may have dropped stream from no ctxs
@@ -336,7 +349,7 @@ func (w *watcher) Watch(ctx context.Context, key string, opts ...OpOption) Watch
 		case <-ctx.Done():
 		case <-donec:
 			if wgs.closeErr != nil {
-				closeCh <- WatchResponse{closeErr: wgs.closeErr}
+				closeCh <- WatchResponse{Canceled: true, closeErr: wgs.closeErr}
 				break
 			}
 			// retry; may have dropped stream from no ctxs
@@ -358,7 +371,47 @@ func (w *watcher) Close() (err error) {
 			err = werr
 		}
 	}
+	// Consider context.Canceled as a successful close
+	if err == context.Canceled {
+		err = nil
+	}
 	return err
+}
+
+// RequestProgress requests a progress notify response be sent in all watch channels.
+func (w *watcher) RequestProgress(ctx context.Context) (err error) {
+	ctxKey := streamKeyFromCtx(ctx)
+
+	w.mu.Lock()
+	if w.streams == nil {
+		return fmt.Errorf("no stream found for context")
+	}
+	wgs := w.streams[ctxKey]
+	if wgs == nil {
+		wgs = w.newWatcherGrpcStream(ctx)
+		w.streams[ctxKey] = wgs
+	}
+	donec := wgs.donec
+	reqc := wgs.reqc
+	w.mu.Unlock()
+
+	pr := &progressRequest{}
+
+	select {
+	case reqc <- pr:
+		return nil
+	case <-ctx.Done():
+		if err == nil {
+			return ctx.Err()
+		}
+		return err
+	case <-donec:
+		if wgs.closeErr != nil {
+			return wgs.closeErr
+		}
+		// retry; may have dropped stream from no ctxs
+		return w.RequestProgress(ctx)
+	}
 }
 
 func (w *watchGrpcStream) close() (err error) {
@@ -384,6 +437,7 @@ func (w *watcher) closeStream(wgs *watchGrpcStream) {
 func (w *watchGrpcStream) addSubstream(resp *pb.WatchResponse, ws *watcherStream) {
 	// check watch ID for backward compatibility (<= v3.3)
 	if resp.WatchId == -1 || (resp.Canceled && resp.CancelReason != "") {
+		w.closeErr = v3rpc.Error(errors.New(resp.CancelReason))
 		// failed; no channel
 		close(ws.recvc)
 		return
@@ -409,7 +463,7 @@ func (w *watchGrpcStream) closeSubstream(ws *watcherStream) {
 	}
 	// close subscriber's channel
 	if closeErr := w.closeErr; closeErr != nil && ws.initReq.ctx.Err() == nil {
-		go w.sendCloseSubstream(ws, &WatchResponse{closeErr: w.closeErr})
+		go w.sendCloseSubstream(ws, &WatchResponse{Canceled: true, closeErr: w.closeErr})
 	} else if ws.outc != nil {
 		close(ws.outc)
 	}
@@ -468,26 +522,31 @@ func (w *watchGrpcStream) run() {
 	for {
 		select {
 		// Watch() requested
-		case wreq := <-w.reqc:
-			outc := make(chan WatchResponse, 1)
-			// TODO: pass custom watch ID?
-			ws := &watcherStream{
-				initReq: *wreq,
-				id:      -1,
-				outc:    outc,
-				// unbuffered so resumes won't cause repeat events
-				recvc: make(chan *WatchResponse),
-			}
+		case req := <-w.reqc:
+			switch wreq := req.(type) {
+			case *watchRequest:
+				outc := make(chan WatchResponse, 1)
+				// TODO: pass custom watch ID?
+				ws := &watcherStream{
+					initReq: *wreq,
+					id:      -1,
+					outc:    outc,
+					// unbuffered so resumes won't cause repeat events
+					recvc: make(chan *WatchResponse),
+				}
 
-			ws.donec = make(chan struct{})
-			w.wg.Add(1)
-			go w.serveSubstream(ws, w.resumec)
+				ws.donec = make(chan struct{})
+				w.wg.Add(1)
+				go w.serveSubstream(ws, w.resumec)
 
-			// queue up for watcher creation/resume
-			w.resuming = append(w.resuming, ws)
-			if len(w.resuming) == 1 {
-				// head of resume queue, can register a new watcher
-				wc.Send(ws.initReq.toPB())
+				// queue up for watcher creation/resume
+				w.resuming = append(w.resuming, ws)
+				if len(w.resuming) == 1 {
+					// head of resume queue, can register a new watcher
+					wc.Send(ws.initReq.toPB())
+				}
+			case *progressRequest:
+				wc.Send(wreq.toPB())
 			}
 
 		// new events from the watch client
@@ -614,7 +673,31 @@ func (w *watchGrpcStream) dispatchEvent(pbresp *pb.WatchResponse) bool {
 		Canceled:        pbresp.Canceled,
 		cancelReason:    pbresp.CancelReason,
 	}
-	ws, ok := w.substreams[pbresp.WatchId]
+
+	// watch IDs are zero indexed, so request notify watch responses are assigned a watch ID of -1 to
+	// indicate they should be broadcast.
+	if wr.IsProgressNotify() && pbresp.WatchId == -1 {
+		return w.broadcastResponse(wr)
+	}
+
+	return w.unicastResponse(wr, pbresp.WatchId)
+
+}
+
+// broadcastResponse send a watch response to all watch substreams.
+func (w *watchGrpcStream) broadcastResponse(wr *WatchResponse) bool {
+	for _, ws := range w.substreams {
+		select {
+		case ws.recvc <- wr:
+		case <-ws.donec:
+		}
+	}
+	return true
+}
+
+// unicastResponse sends a watch response to a specific watch substream.
+func (w *watchGrpcStream) unicastResponse(wr *WatchResponse, watchId int64) bool {
+	ws, ok := w.substreams[watchId]
 	if !ok {
 		return false
 	}
@@ -885,6 +968,13 @@ func (wr *watchRequest) toPB() *pb.WatchRequest {
 		Fragment:       wr.fragment,
 	}
 	cr := &pb.WatchRequest_CreateRequest{CreateRequest: req}
+	return &pb.WatchRequest{RequestUnion: cr}
+}
+
+// toPB converts an internal progress request structure to its protobuf WatchRequest structure.
+func (pr *progressRequest) toPB() *pb.WatchRequest {
+	req := &pb.WatchProgressRequest{}
+	cr := &pb.WatchRequest_ProgressRequest{ProgressRequest: req}
 	return &pb.WatchRequest{RequestUnion: cr}
 }
 

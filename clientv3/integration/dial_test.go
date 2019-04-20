@@ -21,11 +21,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/coreos/etcd/clientv3"
-	pb "github.com/coreos/etcd/etcdserver/etcdserverpb"
-	"github.com/coreos/etcd/integration"
-	"github.com/coreos/etcd/pkg/testutil"
-	"github.com/coreos/etcd/pkg/transport"
+	"go.etcd.io/etcd/clientv3"
+	pb "go.etcd.io/etcd/etcdserver/etcdserverpb"
+	"go.etcd.io/etcd/integration"
+	"go.etcd.io/etcd/pkg/testutil"
+	"go.etcd.io/etcd/pkg/transport"
 	"google.golang.org/grpc"
 )
 
@@ -79,17 +79,11 @@ func TestDialTLSNoConfig(t *testing.T) {
 		DialTimeout: time.Second,
 		DialOptions: []grpc.DialOption{grpc.WithBlock()},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer c.Close()
-
-	// TODO: this should not be required when we set grpc.WithBlock()
-	if c != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-		_, err = c.KV.Get(ctx, "/")
-		cancel()
-	}
+	defer func() {
+		if c != nil {
+			c.Close()
+		}
+	}()
 	if !isClientTimeout(err) {
 		t.Fatalf("expected dial timeout error, got %v", err)
 	}

@@ -22,17 +22,17 @@ import (
 	"sync"
 	"time"
 
-	"github.com/coreos/etcd/etcdserver/api/membership"
-	"github.com/coreos/etcd/etcdserver/api/rafthttp"
-	pb "github.com/coreos/etcd/etcdserver/etcdserverpb"
-	"github.com/coreos/etcd/pkg/contention"
-	"github.com/coreos/etcd/pkg/logutil"
-	"github.com/coreos/etcd/pkg/pbutil"
-	"github.com/coreos/etcd/pkg/types"
-	"github.com/coreos/etcd/raft"
-	"github.com/coreos/etcd/raft/raftpb"
-	"github.com/coreos/etcd/wal"
-	"github.com/coreos/etcd/wal/walpb"
+	"go.etcd.io/etcd/etcdserver/api/membership"
+	"go.etcd.io/etcd/etcdserver/api/rafthttp"
+	pb "go.etcd.io/etcd/etcdserver/etcdserverpb"
+	"go.etcd.io/etcd/pkg/contention"
+	"go.etcd.io/etcd/pkg/logutil"
+	"go.etcd.io/etcd/pkg/pbutil"
+	"go.etcd.io/etcd/pkg/types"
+	"go.etcd.io/etcd/raft"
+	"go.etcd.io/etcd/raft/raftpb"
+	"go.etcd.io/etcd/wal"
+	"go.etcd.io/etcd/wal/walpb"
 
 	"go.uber.org/zap"
 )
@@ -58,20 +58,8 @@ var (
 )
 
 func init() {
-	lcfg := &zap.Config{
-		Level:       zap.NewAtomicLevelAt(zap.InfoLevel),
-		Development: false,
-		Sampling: &zap.SamplingConfig{
-			Initial:    100,
-			Thereafter: 100,
-		},
-		Encoding:      "json",
-		EncoderConfig: zap.NewProductionEncoderConfig(),
-
-		OutputPaths:      []string{"stderr"},
-		ErrorOutputPaths: []string{"stderr"},
-	}
-	lg, err := logutil.NewRaftLogger(lcfg)
+	lcfg := logutil.DefaultZapLoggerConfig
+	lg, err := logutil.NewRaftLogger(&lcfg)
 	if err != nil {
 		log.Fatalf("cannot create raft logger %v", err)
 	}
@@ -439,9 +427,9 @@ func startNode(cfg ServerConfig, cl *membership.RaftCluster, ids []types.ID) (id
 	)
 	if w, err = wal.Create(cfg.Logger, cfg.WALDir(), metadata); err != nil {
 		if cfg.Logger != nil {
-			cfg.Logger.Fatal("failed to create WAL", zap.Error(err))
+			cfg.Logger.Panic("failed to create WAL", zap.Error(err))
 		} else {
-			plog.Fatalf("create wal error: %v", err)
+			plog.Panicf("create wal error: %v", err)
 		}
 	}
 	peers := make([]raft.Peer, len(ids))

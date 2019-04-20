@@ -29,16 +29,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/coreos/etcd/etcdserver"
-	"github.com/coreos/etcd/etcdserver/api"
-	"github.com/coreos/etcd/etcdserver/api/membership"
-	"github.com/coreos/etcd/etcdserver/api/v2error"
-	"github.com/coreos/etcd/etcdserver/api/v2http/httptypes"
-	"github.com/coreos/etcd/etcdserver/api/v2store"
-	"github.com/coreos/etcd/etcdserver/etcdserverpb"
-	"github.com/coreos/etcd/pkg/testutil"
-	"github.com/coreos/etcd/pkg/types"
-	"github.com/coreos/etcd/raft/raftpb"
+	"go.etcd.io/etcd/etcdserver"
+	"go.etcd.io/etcd/etcdserver/api"
+	"go.etcd.io/etcd/etcdserver/api/membership"
+	"go.etcd.io/etcd/etcdserver/api/v2error"
+	"go.etcd.io/etcd/etcdserver/api/v2http/httptypes"
+	"go.etcd.io/etcd/etcdserver/api/v2store"
+	"go.etcd.io/etcd/etcdserver/etcdserverpb"
+	"go.etcd.io/etcd/pkg/testutil"
+	"go.etcd.io/etcd/pkg/types"
+	"go.etcd.io/etcd/raft/raftpb"
 
 	"github.com/coreos/go-semver/semver"
 	"github.com/jonboulle/clockwork"
@@ -1491,7 +1491,7 @@ func TestBadServeKeys(t *testing.T) {
 			},
 
 			http.StatusInternalServerError,
-			`{"errorCode":300,"message":"Raft Internal Error","cause":"received response with no Event/Watcher!","index":0}`,
+			`{"errorCode":300,"message":"Raft Internal Error","cause":"received response with no Event/Watcher","index":0}`,
 		},
 	}
 	for i, tt := range testBadCases {

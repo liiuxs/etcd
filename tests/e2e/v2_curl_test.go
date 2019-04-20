@@ -21,7 +21,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/coreos/etcd/pkg/testutil"
+	"go.etcd.io/etcd/pkg/testutil"
 )
 
 func TestV2CurlNoTLS(t *testing.T)      { testCurlPutGet(t, &configNoTLS) }
@@ -149,7 +149,11 @@ func cURLPrefixArgs(clus *etcdProcessCluster, method string, req cURLReq) []stri
 			cmdArgs = append(cmdArgs, "--cacert", caPath, "--cert", certPath, "--key", privateKeyPath)
 			acurl = toTLS(clus.procs[rand.Intn(clus.cfg.clusterSize)].Config().acurl)
 		} else if clus.cfg.clientTLS == clientTLS {
-			cmdArgs = append(cmdArgs, "--cacert", caPath, "--cert", certPath, "--key", privateKeyPath)
+			if !clus.cfg.noCN {
+				cmdArgs = append(cmdArgs, "--cacert", caPath, "--cert", certPath, "--key", privateKeyPath)
+			} else {
+				cmdArgs = append(cmdArgs, "--cacert", caPath, "--cert", certPath3, "--key", privateKeyPath3)
+			}
 		}
 	}
 	if req.metricsURLScheme != "" {

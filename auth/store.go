@@ -24,10 +24,10 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/coreos/etcd/auth/authpb"
-	"github.com/coreos/etcd/etcdserver/api/v3rpc/rpctypes"
-	pb "github.com/coreos/etcd/etcdserver/etcdserverpb"
-	"github.com/coreos/etcd/mvcc/backend"
+	"go.etcd.io/etcd/auth/authpb"
+	"go.etcd.io/etcd/etcdserver/api/v3rpc/rpctypes"
+	pb "go.etcd.io/etcd/etcdserver/etcdserverpb"
+	"go.etcd.io/etcd/mvcc/backend"
 
 	"github.com/coreos/pkg/capnslog"
 	"go.uber.org/zap"
@@ -48,7 +48,7 @@ var (
 	authUsersBucketName = []byte("authUsers")
 	authRolesBucketName = []byte("authRoles")
 
-	plog = capnslog.NewPackageLogger("github.com/coreos/etcd", "auth")
+	plog = capnslog.NewPackageLogger("go.etcd.io/etcd", "auth")
 
 	ErrRootUserNotExist     = errors.New("auth: root user does not exist")
 	ErrRootRoleNotExist     = errors.New("auth: root user does not have root role")
@@ -1165,6 +1165,27 @@ func (as *authStore) AuthInfoFromTLS(ctx context.Context) (ai *AuthInfo) {
 		ai = &AuthInfo{
 			Username: chains[0].Subject.CommonName,
 			Revision: as.Revision(),
+		}
+		md, ok := metadata.FromIncomingContext(ctx)
+		if !ok {
+			return nil
+		}
+
+		// gRPC-gateway proxy request to etcd server includes Grpcgateway-Accept
+		// header. The proxy uses etcd client server certificate. If the certificate
+		// has a CommonName we should never use this for authentication.
+		if gw := md["grpcgateway-accept"]; len(gw) > 0 {
+			if as.lg != nil {
+				as.lg.Warn(
+					"ignoring common name in gRPC-gateway proxy request",
+					zap.String("common-name", ai.Username),
+					zap.String("user-name", ai.Username),
+					zap.Uint64("revision", ai.Revision),
+				)
+			} else {
+				plog.Warningf("ignoring common name in gRPC-gateway proxy request %s", ai.Username)
+			}
+			return nil
 		}
 		if as.lg != nil {
 			as.lg.Debug(

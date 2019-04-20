@@ -53,7 +53,7 @@ COVER=${COVER:-"-cover"}
 IGNORE_PKGS="(vendor/|etcdserverpb|rafttest|gopath.proto|v3lockpb|v3electionpb)"
 INTEGRATION_PKGS="(integration|tests/e2e|contrib|functional)"
 
-# all github.com/coreos/etcd/whatever pkgs that are not auto-generated / tools
+# all github.com/etcd-io/etcd/whatever pkgs that are not auto-generated / tools
 # shellcheck disable=SC1117
 PKGS=$(find . -name \*.go | while read -r a; do dirname "$a"; done | sort | uniq | grep -vE "$IGNORE_PKGS" | grep -vE "(tools/|contrib/|tests/e2e|pb)" | sed "s|\.|${REPO_PATH}|g" | xargs echo)
 # pkg1,pkg2,pkg3
@@ -115,7 +115,7 @@ fi
 
 # determine the number of CPUs to use for Go tests
 TEST_CPUS="1,2,4"
-if [ ! -z "${CPU}" ]; then
+if [ -n "${CPU}" ]; then
 	TEST_CPUS="${CPU}"
 fi
 echo "Running with TEST_CPUS:" "${TEST_CPUS}"
@@ -126,7 +126,7 @@ if [ "$GOARCH" == "amd64" ]; then
 fi
 
 RUN_ARG=""
-if [ ! -z "${TESTCASE}" ]; then
+if [ -n "${TESTCASE}" ]; then
 	RUN_ARG="-run=${TESTCASE}"
 fi
 
@@ -234,7 +234,7 @@ function cov_pass {
 	echo "Running code coverage..."
 	# install gocovmerge before running code coverage from github.com/wadey/gocovmerge
 	# gocovmerge merges coverage files
-	if ! which gocovmerge >/dev/null; then
+	if ! command -v gocovmerge >/dev/null; then
 		echo "gocovmerge not installed"
 		exit 255
 	fi
@@ -353,7 +353,7 @@ function release_pass {
 	echo "Downloading $file"
 
 	set +e
-	curl --fail -L "https://github.com/coreos/etcd/releases/download/$UPGRADE_VER/$file" -o "/tmp/$file"
+	curl --fail -L "https://github.com/etcd-io/etcd/releases/download/$UPGRADE_VER/$file" -o "/tmp/$file"
 	local result=$?
 	set -e
 	case $result in
@@ -369,7 +369,7 @@ function release_pass {
 }
 
 function shellcheck_pass {
-	if which shellcheck >/dev/null; then
+	if command -v shellcheck >/dev/null; then
 		shellcheckResult=$(shellcheck -fgcc build test scripts/*.sh 2>&1 || true)
 		if [ -n "${shellcheckResult}" ]; then
 			echo -e "shellcheck checking failed:\\n${shellcheckResult}"
@@ -381,7 +381,7 @@ function shellcheck_pass {
 function markdown_you_pass {
 	# eschew you
 	yous=$(find . -name \*.md ! -path './vendor/*' ! -path './Documentation/v2/*' ! -path './gopath.proto/*' -exec grep -E --color "[Yy]ou[r]?[ '.,;]" {} + || true)
-	if [ ! -z "$yous" ]; then
+	if [ -n "$yous" ]; then
 		echo -e "found 'you' in documentation:\\n${yous}"
 		exit 255
 	fi
@@ -389,7 +389,7 @@ function markdown_you_pass {
 
 function markdown_marker_pass {
 	# TODO: check other markdown files when marker handles headers with '[]'
-	if which marker >/dev/null; then
+	if command -v marker >/dev/null; then
 		markerResult=$(marker --skip-http --root ./Documentation 2>&1 || true)
 		if [ -n "${markerResult}" ]; then
 			echo -e "marker checking failed:\\n${markerResult}"
@@ -401,7 +401,7 @@ function markdown_marker_pass {
 }
 
 function goword_pass {
-	if which goword >/dev/null; then
+	if command -v goword >/dev/null; then
 		# get all go files to process
 		gofiles=$(find "${FMT[@]}" -iname '*.go' 2>/dev/null)
 		# shellcheck disable=SC2206
@@ -413,13 +413,13 @@ function goword_pass {
 		gofiles=($gofiles)
 		# only check for broken exported godocs
 		gowordRes=$(goword -use-spell=false "${gofiles[@]}" | grep godoc-export | sort)
-		if [ ! -z "$gowordRes" ]; then
+		if [ -n "$gowordRes" ]; then
 			echo -e "goword checking failed:\\n${gowordRes}"
 			exit 255
 		fi
 		# check some spelling
 		gowordRes=$(goword -ignore-file=.words clientv3/{*,*/*}.go 2>&1 | grep spell | sort)
-		if [ ! -z "$gowordRes" ]; then
+		if [ -n "$gowordRes" ]; then
 			echo -e "goword checking failed:\\n${gowordRes}"
 			exit 255
 		fi
@@ -448,7 +448,11 @@ function govet_shadow_pass {
 	fmtpkgs=$(for a in "${FMT[@]}"; do dirname "$a"; done | sort | uniq | grep -v "\\.")
 	# shellcheck disable=SC2206
 	fmtpkgs=($fmtpkgs)
-	vetRes=$(go tool vet -all -shadow "${fmtpkgs[@]}" 2>&1 | grep -v '/gw/' || true)
+	# Golang 1.12 onwards the experimental -shadow option is no longer available with go vet
+	go get golang.org/x/tools/go/analysis/passes/shadow/cmd/shadow
+	export PATH=${GOPATH}/bin:${PATH}
+	shadow_tool=$(which shadow)
+	vetRes=$(go vet -all -vettool="${shadow_tool}" "${TEST[@]}")
 	if [ -n "${vetRes}" ]; then
 		echo -e "govet -all -shadow checking failed:\\n${vetRes}"
 		exit 255
@@ -456,7 +460,7 @@ function govet_shadow_pass {
 }
 
 function gosimple_pass {
-	if which gosimple >/dev/null; then
+	if command -v gosimple >/dev/null; then
 		gosimpleResult=$(gosimple "${STATIC_ANALYSIS_PATHS[@]}" 2>&1 || true)
 		if [ -n "${gosimpleResult}" ]; then
 			echo -e "gosimple checking failed:\\n${gosimpleResult}"
@@ -468,7 +472,7 @@ function gosimple_pass {
 }
 
 function unused_pass {
-	if which unused >/dev/null; then
+	if command -v unused >/dev/null; then
 		unusedResult=$(unused "${STATIC_ANALYSIS_PATHS[@]}" 2>&1 || true)
 		if [ -n "${unusedResult}" ]; then
 			echo -e "unused checking failed:\\n${unusedResult}"
@@ -480,7 +484,7 @@ function unused_pass {
 }
 
 function unparam_pass {
-	if which unparam >/dev/null; then
+	if command -v unparam >/dev/null; then
 		unparamResult=$(unparam "${STATIC_ANALYSIS_PATHS[@]}" 2>&1 || true)
 		if [ -n "${unparamResult}" ]; then
 			echo -e "unparam checking failed:\\n${unparamResult}"
@@ -492,7 +496,7 @@ function unparam_pass {
 }
 
 function staticcheck_pass {
-	if which staticcheck >/dev/null; then
+	if command -v staticcheck >/dev/null; then
 		staticcheckResult=$(staticcheck "${STATIC_ANALYSIS_PATHS[@]}" 2>&1 || true)
 		if [ -n "${staticcheckResult}" ]; then
 			# TODO: resolve these after go1.8 migration
@@ -511,8 +515,20 @@ function staticcheck_pass {
 	fi
 }
 
+function revive_pass {
+	if command -v revive >/dev/null; then
+		reviveResult=$(revive -config ./tests/revive.toml -exclude "vendor/..." ./... 2>&1 || true)
+		if [ -n "${reviveResult}" ]; then
+			echo -e "revive checking failed:\\n${reviveResult}"
+			exit 255
+		fi
+	else
+		echo "Skipping revive..."
+	fi
+}
+
 function unconvert_pass {
-	if which unconvert >/dev/null; then
+	if command -v unconvert >/dev/null; then
 		unconvertResult=$(unconvert -v "${STATIC_ANALYSIS_PATHS[@]}" 2>&1 || true)
 		if [ -n "${unconvertResult}" ]; then
 			echo -e "unconvert checking failed:\\n${unconvertResult}"
@@ -524,7 +540,7 @@ function unconvert_pass {
 }
 
 function ineffassign_pass {
-	if which ineffassign >/dev/null; then
+	if command -v ineffassign >/dev/null; then
 		ineffassignResult=$(ineffassign "${STATIC_ANALYSIS_PATHS[@]}" 2>&1 || true)
 		if [ -n "${ineffassignResult}" ]; then
 			echo -e "ineffassign checking failed:\\n${ineffassignResult}"
@@ -536,7 +552,7 @@ function ineffassign_pass {
 }
 
 function nakedret_pass {
-	if which nakedret >/dev/null; then
+	if command -v nakedret >/dev/null; then
 		nakedretResult=$(nakedret "${STATIC_ANALYSIS_PATHS[@]}" 2>&1 || true)
 		if [ -n "${nakedretResult}" ]; then
 			echo -e "nakedret checking failed:\\n${nakedretResult}"
@@ -604,6 +620,7 @@ function commit_title_pass {
 function fmt_pass {
 	toggle_failpoints disable
 
+    # TODO: add "unparam"
 	for p in shellcheck \
 			markdown_you \
 			markdown_marker \
@@ -613,8 +630,8 @@ function fmt_pass {
 			govet_shadow \
 			gosimple \
 			unused \
-			unparam \
 			staticcheck \
+			revive \
 			unconvert \
 			ineffassign \
 			nakedret \
@@ -629,13 +646,13 @@ function fmt_pass {
 }
 
 function bom_pass {
-	if ! which license-bill-of-materials >/dev/null; then
+	if ! command -v license-bill-of-materials >/dev/null; then
 		return
 	fi
 	echo "Checking bill of materials..."
 	license-bill-of-materials \
 		--override-file bill-of-materials.override.json \
-		github.com/coreos/etcd github.com/coreos/etcd/etcdctl >bom-now.json || true
+		go.etcd.io/etcd go.etcd.io/etcd/etcdctl >bom-now.json || true
 	if ! diff bill-of-materials.json bom-now.json; then
 		echo "vendored licenses do not match given bill of materials"
 		exit 255
@@ -650,7 +667,7 @@ function dep_pass {
 	badpkg="(etcdserver$|mvcc$|backend$|grpc-gateway)"
 	deps=$(go list -f '{{ .Deps }}'  | sed 's/ /\n/g' | grep -E "${badpkg}" || echo "")
 	popd >/dev/null
-	if [ ! -z "$deps" ]; then
+	if [ -n "$deps" ]; then
 		echo -e "clientv3 has masked dependencies:\\n${deps}"
 		exit 255
 	fi

@@ -21,10 +21,9 @@ import (
 	"io/ioutil"
 	"os"
 	"reflect"
-	"sort"
 	"sync"
 
-	"github.com/coreos/etcd/pkg/logutil"
+	"go.etcd.io/etcd/pkg/logutil"
 
 	"github.com/coreos/pkg/capnslog"
 	"go.uber.org/zap"
@@ -93,7 +92,7 @@ func (cfg *Config) setupLogging() error {
 
 		// TODO: deprecate with "capnslog"
 		if cfg.LogPkgLevels != "" {
-			repoLog := capnslog.MustRepoLogger("github.com/coreos/etcd")
+			repoLog := capnslog.MustRepoLogger("go.etcd.io/etcd")
 			settings, err := repoLog.ParseLogLevelConfig(cfg.LogPkgLevels)
 			if err != nil {
 				plog.Warningf("couldn't parse log level string: %s, continuing with default levels", err.Error())
@@ -103,8 +102,7 @@ func (cfg *Config) setupLogging() error {
 		}
 
 		if len(cfg.LogOutputs) != 1 {
-			fmt.Printf("--logger=capnslog supports only 1 value in '--log-outputs', got %q\n", cfg.LogOutputs)
-			os.Exit(1)
+			return fmt.Errorf("--logger=capnslog supports only 1 value in '--log-outputs', got %q", cfg.LogOutputs)
 		}
 		// capnslog initially SetFormatter(NewDefaultFormatter(os.Stderr))
 		// where NewDefaultFormatter returns NewJournaldFormatter when syscall.Getppid() == 1
@@ -117,7 +115,7 @@ func (cfg *Config) setupLogging() error {
 			capnslog.SetFormatter(capnslog.NewPrettyFormatter(os.Stdout, cfg.Debug))
 		case DefaultLogOutput:
 		default:
-			plog.Panicf(`unknown log-output %q (only supports %q, %q, %q)`, output, DefaultLogOutput, StdErrLogOutput, StdOutLogOutput)
+			return fmt.Errorf("unknown log-output %q (only supports %q, %q, %q)", output, DefaultLogOutput, StdErrLogOutput, StdOutLogOutput)
 		}
 
 	case "zap":
@@ -127,86 +125,66 @@ func (cfg *Config) setupLogging() error {
 		if len(cfg.LogOutputs) > 1 {
 			for _, v := range cfg.LogOutputs {
 				if v == DefaultLogOutput {
-					panic(fmt.Errorf("multi logoutput for %q is not supported yet", DefaultLogOutput))
+					return fmt.Errorf("multi logoutput for %q is not supported yet", DefaultLogOutput)
 				}
 			}
 		}
 
-		// TODO: use zapcore to support more features?
-		lcfg := zap.Config{
-			Level:       zap.NewAtomicLevelAt(zap.InfoLevel),
-			Development: false,
-			Sampling: &zap.SamplingConfig{
-				Initial:    100,
-				Thereafter: 100,
-			},
-			Encoding:      "json",
-			EncoderConfig: zap.NewProductionEncoderConfig(),
-
-			OutputPaths:      make([]string, 0),
-			ErrorOutputPaths: make([]string, 0),
-		}
-
-		outputPaths, errOutputPaths := make(map[string]struct{}), make(map[string]struct{})
+		outputPaths, errOutputPaths := make([]string, 0), make([]string, 0)
 		isJournal := false
 		for _, v := range cfg.LogOutputs {
 			switch v {
 			case DefaultLogOutput:
-				return errors.New("'--log-outputs=default' is not supported for v3.4 during zap logger migraion (use 'journal', 'stderr', 'stdout', etc.)")
+				outputPaths = append(outputPaths, StdErrLogOutput)
+				errOutputPaths = append(errOutputPaths, StdErrLogOutput)
 
 			case JournalLogOutput:
 				isJournal = true
 
 			case StdErrLogOutput:
-				outputPaths[StdErrLogOutput] = struct{}{}
-				errOutputPaths[StdErrLogOutput] = struct{}{}
+				outputPaths = append(outputPaths, StdErrLogOutput)
+				errOutputPaths = append(errOutputPaths, StdErrLogOutput)
 
 			case StdOutLogOutput:
-				outputPaths[StdOutLogOutput] = struct{}{}
-				errOutputPaths[StdOutLogOutput] = struct{}{}
+				outputPaths = append(outputPaths, StdOutLogOutput)
+				errOutputPaths = append(errOutputPaths, StdOutLogOutput)
 
 			default:
-				outputPaths[v] = struct{}{}
-				errOutputPaths[v] = struct{}{}
+				outputPaths = append(outputPaths, v)
+				errOutputPaths = append(errOutputPaths, v)
 			}
 		}
 
 		if !isJournal {
-			for v := range outputPaths {
-				lcfg.OutputPaths = append(lcfg.OutputPaths, v)
-			}
-			for v := range errOutputPaths {
-				lcfg.ErrorOutputPaths = append(lcfg.ErrorOutputPaths, v)
-			}
-			sort.Strings(lcfg.OutputPaths)
-			sort.Strings(lcfg.ErrorOutputPaths)
+			copied := logutil.AddOutputPaths(logutil.DefaultZapLoggerConfig, outputPaths, errOutputPaths)
 
 			if cfg.Debug {
-				lcfg.Level = zap.NewAtomicLevelAt(zap.DebugLevel)
+				copied.Level = zap.NewAtomicLevelAt(zap.DebugLevel)
 				grpc.EnableTracing = true
 			}
-
-			var err error
-			cfg.logger, err = lcfg.Build()
-			if err != nil {
-				return err
-			}
-
-			cfg.loggerConfig = &lcfg
-			cfg.loggerCore = nil
-			cfg.loggerWriteSyncer = nil
-
-			grpcLogOnce.Do(func() {
-				// debug true, enable info, warning, error
-				// debug false, only discard info
-				var gl grpclog.LoggerV2
-				gl, err = logutil.NewGRPCLoggerV2(lcfg)
-				if err == nil {
-					grpclog.SetLoggerV2(gl)
+			if cfg.ZapLoggerBuilder == nil {
+				cfg.ZapLoggerBuilder = func(c *Config) error {
+					var err error
+					c.logger, err = copied.Build()
+					if err != nil {
+						return err
+					}
+					c.loggerMu.Lock()
+					defer c.loggerMu.Unlock()
+					c.loggerConfig = &copied
+					c.loggerCore = nil
+					c.loggerWriteSyncer = nil
+					grpcLogOnce.Do(func() {
+						// debug true, enable info, warning, error
+						// debug false, only discard info
+						var gl grpclog.LoggerV2
+						gl, err = logutil.NewGRPCLoggerV2(copied)
+						if err == nil {
+							grpclog.SetLoggerV2(gl)
+						}
+					})
+					return nil
 				}
-			})
-			if err != nil {
-				return err
 			}
 		} else {
 			if len(cfg.LogOutputs) > 1 {
@@ -232,19 +210,30 @@ func (cfg *Config) setupLogging() error {
 			// WARN: do not change field names in encoder config
 			// journald logging writer assumes field names of "level" and "caller"
 			cr := zapcore.NewCore(
-				zapcore.NewJSONEncoder(zap.NewProductionEncoderConfig()),
+				zapcore.NewJSONEncoder(logutil.DefaultZapLoggerConfig.EncoderConfig),
 				syncer,
 				lvl,
 			)
-			cfg.logger = zap.New(cr, zap.AddCaller(), zap.ErrorOutput(syncer))
+			if cfg.ZapLoggerBuilder == nil {
+				cfg.ZapLoggerBuilder = func(c *Config) error {
+					c.logger = zap.New(cr, zap.AddCaller(), zap.ErrorOutput(syncer))
+					c.loggerMu.Lock()
+					defer c.loggerMu.Unlock()
+					c.loggerConfig = nil
+					c.loggerCore = cr
+					c.loggerWriteSyncer = syncer
 
-			cfg.loggerConfig = nil
-			cfg.loggerCore = cr
-			cfg.loggerWriteSyncer = syncer
+					grpcLogOnce.Do(func() {
+						grpclog.SetLoggerV2(logutil.NewGRPCLoggerV2FromZapCore(cr, syncer))
+					})
+					return nil
+				}
+			}
+		}
 
-			grpcLogOnce.Do(func() {
-				grpclog.SetLoggerV2(logutil.NewGRPCLoggerV2FromZapCore(cr, syncer))
-			})
+		err := cfg.ZapLoggerBuilder(cfg)
+		if err != nil {
+			return err
 		}
 
 		logTLSHandshakeFailure := func(conn *tls.Conn, err error) {
@@ -282,4 +271,21 @@ func (cfg *Config) setupLogging() error {
 	}
 
 	return nil
+}
+
+// NewZapCoreLoggerBuilder generates a zap core logger builder.
+func NewZapCoreLoggerBuilder(lg *zap.Logger, cr zapcore.Core, syncer zapcore.WriteSyncer) func(*Config) error {
+	return func(cfg *Config) error {
+		cfg.loggerMu.Lock()
+		defer cfg.loggerMu.Unlock()
+		cfg.logger = lg
+		cfg.loggerConfig = nil
+		cfg.loggerCore = cr
+		cfg.loggerWriteSyncer = syncer
+
+		grpcLogOnce.Do(func() {
+			grpclog.SetLoggerV2(logutil.NewGRPCLoggerV2FromZapCore(cr, syncer))
+		})
+		return nil
+	}
 }

@@ -23,8 +23,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/coreos/etcd/etcdserver/api/v3rpc/rpctypes"
-	"github.com/grpc-ecosystem/go-grpc-middleware/util/backoffutils"
+	"go.etcd.io/etcd/etcdserver/api/v3rpc/rpctypes"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -46,14 +45,24 @@ func (c *Client) unaryClientInterceptor(logger *zap.Logger, optFuncs ...retryOpt
 		}
 		var lastErr error
 		for attempt := uint(0); attempt < callOpts.max; attempt++ {
-			if err := waitRetryBackoff(attempt, ctx, callOpts); err != nil {
+			if err := waitRetryBackoff(ctx, attempt, callOpts); err != nil {
 				return err
 			}
+			logger.Debug(
+				"retrying of unary invoker",
+				zap.String("target", cc.Target()),
+				zap.Uint("attempt", attempt),
+			)
 			lastErr = invoker(ctx, method, req, reply, cc, grpcOpts...)
-			logger.Info("retry unary intercept", zap.Uint("attempt", attempt), zap.Error(lastErr))
 			if lastErr == nil {
 				return nil
 			}
+			logger.Warn(
+				"retrying of unary invoker failed",
+				zap.String("target", cc.Target()),
+				zap.Uint("attempt", attempt),
+				zap.Error(lastErr),
+			)
 			if isContextError(lastErr) {
 				if ctx.Err() != nil {
 					// its the context deadline or cancellation.
@@ -65,7 +74,11 @@ func (c *Client) unaryClientInterceptor(logger *zap.Logger, optFuncs ...retryOpt
 			if callOpts.retryAuth && rpctypes.Error(lastErr) == rpctypes.ErrInvalidAuthToken {
 				gterr := c.getToken(ctx)
 				if gterr != nil {
-					logger.Info("retry failed to fetch new auth token", zap.Error(gterr))
+					logger.Warn(
+						"retrying of unary invoker failed to fetch new auth token",
+						zap.String("target", cc.Target()),
+						zap.Error(gterr),
+					)
 					return lastErr // return the original error for simplicity
 				}
 				continue
@@ -99,7 +112,7 @@ func (c *Client) streamClientInterceptor(logger *zap.Logger, optFuncs ...retryOp
 			return nil, grpc.Errorf(codes.Unimplemented, "clientv3/retry_interceptor: cannot retry on ClientStreams, set Disable()")
 		}
 		newStreamer, err := streamer(ctx, desc, cc, method, grpcOpts...)
-		logger.Info("retry stream intercept", zap.Error(err))
+		logger.Warn("retry stream intercept", zap.Error(err))
 		if err != nil {
 			// TODO(mwitkow): Maybe dial and transport errors should be retriable?
 			return nil, err
@@ -173,7 +186,7 @@ func (s *serverStreamingRetryingStream) RecvMsg(m interface{}) error {
 	}
 	// We start off from attempt 1, because zeroth was already made on normal SendMsg().
 	for attempt := uint(1); attempt < s.callOpts.max; attempt++ {
-		if err := waitRetryBackoff(attempt, s.ctx, s.callOpts); err != nil {
+		if err := waitRetryBackoff(s.ctx, attempt, s.callOpts); err != nil {
 			return err
 		}
 		newStream, err := s.reestablishStreamAndResendBuffer(s.ctx)
@@ -215,7 +228,7 @@ func (s *serverStreamingRetryingStream) receiveMsgAndIndicateRetry(m interface{}
 	if s.callOpts.retryAuth && rpctypes.Error(err) == rpctypes.ErrInvalidAuthToken {
 		gterr := s.client.getToken(s.ctx)
 		if gterr != nil {
-			s.client.lg.Info("retry failed to fetch new auth token", zap.Error(gterr))
+			s.client.lg.Warn("retry failed to fetch new auth token", zap.Error(gterr))
 			return false, err // return the original error for simplicity
 		}
 		return true, err
@@ -243,8 +256,8 @@ func (s *serverStreamingRetryingStream) reestablishStreamAndResendBuffer(callCtx
 	return newStream, nil
 }
 
-func waitRetryBackoff(attempt uint, ctx context.Context, callOpts *options) error {
-	var waitTime time.Duration = 0
+func waitRetryBackoff(ctx context.Context, attempt uint, callOpts *options) error {
+	waitTime := time.Duration(0)
 	if attempt > 0 {
 		waitTime = callOpts.backoffFunc(attempt)
 	}
@@ -377,6 +390,6 @@ func filterCallOptions(callOptions []grpc.CallOption) (grpcOptions []grpc.CallOp
 // For example waitBetween=1s and jitter=0.10 can generate waits between 900ms and 1100ms.
 func backoffLinearWithJitter(waitBetween time.Duration, jitterFraction float64) backoffFunc {
 	return func(attempt uint) time.Duration {
-		return backoffutils.JitterUp(waitBetween, jitterFraction)
+		return jitterUp(waitBetween, jitterFraction)
 	}
 }

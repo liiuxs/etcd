@@ -25,9 +25,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	bolt "github.com/coreos/bbolt"
 	"github.com/coreos/pkg/capnslog"
 	humanize "github.com/dustin/go-humanize"
+	bolt "go.etcd.io/bbolt"
 	"go.uber.org/zap"
 )
 
@@ -42,7 +42,7 @@ var (
 	// This only works for linux.
 	initialMmapSize = uint64(10 * 1024 * 1024 * 1024)
 
-	plog = capnslog.NewPackageLogger("github.com/coreos/etcd", "mvcc/backend")
+	plog = capnslog.NewPackageLogger("go.etcd.io/etcd", "mvcc/backend")
 
 	// minSnapshotWarningTimeout is the minimum threshold to trigger a long running snapshot warning.
 	minSnapshotWarningTimeout = 30 * time.Second
@@ -110,6 +110,8 @@ type BackendConfig struct {
 	BatchInterval time.Duration
 	// BatchLimit is the maximum puts before flushing the BatchTx.
 	BatchLimit int
+	// BackendFreelistType is the backend boltdb's freelist type.
+	BackendFreelistType bolt.FreelistType
 	// MmapSize is the number of bytes to mmap for the backend.
 	MmapSize uint64
 	// Logger logs backend-side operations.
@@ -140,6 +142,7 @@ func newBackend(bcfg BackendConfig) *backend {
 		*bopts = *boltOpenOptions
 	}
 	bopts.InitialMmapSize = bcfg.mmapSize()
+	bopts.FreelistType = bcfg.BackendFreelistType
 
 	db, err := bolt.Open(bcfg.Path, 0600, bopts)
 	if err != nil {
@@ -333,8 +336,8 @@ func (b *backend) defrag() error {
 	defer b.mu.Unlock()
 
 	// block concurrent read requests while resetting tx
-	b.readTx.mu.Lock()
-	defer b.readTx.mu.Unlock()
+	b.readTx.Lock()
+	defer b.readTx.Unlock()
 
 	b.batchTx.unsafeCommit(true)
 
@@ -399,14 +402,7 @@ func (b *backend) defrag() error {
 			plog.Panicf("cannot open database at %s (%v)", dbp, err)
 		}
 	}
-	b.batchTx.tx, err = b.db.Begin(true)
-	if err != nil {
-		if b.lg != nil {
-			b.lg.Fatal("failed to begin tx", zap.Error(err))
-		} else {
-			plog.Fatalf("cannot begin tx (%s)", err)
-		}
-	}
+	b.batchTx.tx = b.unsafeBegin(true)
 
 	b.readTx.reset()
 	b.readTx.tx = b.unsafeBegin(false)

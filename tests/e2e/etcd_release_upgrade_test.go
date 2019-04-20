@@ -17,13 +17,14 @@ package e2e
 import (
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/coreos/etcd/pkg/fileutil"
-	"github.com/coreos/etcd/pkg/testutil"
-	"github.com/coreos/etcd/version"
+	"go.etcd.io/etcd/pkg/fileutil"
+	"go.etcd.io/etcd/pkg/testutil"
+	"go.etcd.io/etcd/version"
 )
 
 // TestReleaseUpgrade ensures that changes to master branch does not affect
@@ -100,6 +101,15 @@ func TestReleaseUpgrade(t *testing.T) {
 				cx.t.Fatalf("#%d-%d: ctlV3Get error (%v)", i, j, err)
 			}
 		}
+	}
+
+	// expect upgraded cluster version
+	ver := version.Version
+	if strings.HasSuffix(ver, "+git") {
+		ver = strings.Replace(ver, "+git", "", 1)
+	}
+	if err := cURLGet(cx.epc, cURLReq{endpoint: "/metrics", expected: fmt.Sprintf(`etcd_cluster_version{cluster_version="%s"} 1`, ver), metricsURLScheme: cx.cfg.metricsURLScheme}); err != nil {
+		cx.t.Fatalf("failed get with curl (%v)", err)
 	}
 }
 
