@@ -85,14 +85,17 @@ tools_build() {
 		  -o "${out}/${tool}" "${REPO_PATH}/${tool}" || return
 	done
 }
-
+	echo "00000"
 toggle_failpoints_default
+	echo "11111"
 
 if [[ "${ETCD_SETUP_GOPATH}" == "1" ]]; then
+	echo "etcd_setup_gopath == 1"
 	etcd_setup_gopath
 fi
 
 # only build when called directly, not sourced
 if echo "$0" | grep "build$" >/dev/null; then
+	echo "etcd_build222222222222 == $0"
 	etcd_build
 fi

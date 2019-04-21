@@ -25,5 +25,6 @@ package main
 import "go.etcd.io/etcd/etcdmain"
 
 func main() {
+	// go build -v -o myetcd1
 	etcdmain.Main()
 }

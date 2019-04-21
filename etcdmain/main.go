@@ -24,10 +24,13 @@ import (
 )
 
 func Main() {
-	checkSupportArch()  // 
+	checkSupportArch()  //
+
+	fmt.Println("len(os.Args)",len(os.Args))
 
 	if len(os.Args) > 1 {
 		cmd := os.Args[1]
+		fmt.Println("cmd",cmd)
 		if covArgs := os.Getenv("ETCDCOV_ARGS"); len(covArgs) > 0 {
 			args := strings.Split(os.Getenv("ETCDCOV_ARGS"), "\xe7\xcd")[1:]
 			rootCmd.SetArgs(args)
@@ -43,6 +46,7 @@ func Main() {
 		}
 	}
 
+	fmt.Println("startEtcdOrProxyV2 ---- ")
 	startEtcdOrProxyV2()
 }
 
