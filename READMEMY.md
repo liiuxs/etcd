@@ -1,0 +1,5 @@
+## begin
+
+make
+
+./bin/etcd

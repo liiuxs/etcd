@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"time"
@@ -254,10 +255,17 @@ func (c *ServerConfig) advertiseMatchesCluster() error {
 func (c *ServerConfig) MemberDir() string { return filepath.Join(c.DataDir, "member") }
 
 func (c *ServerConfig) WALDir() string {
+	fmt.Println()
+	debug.PrintStack()
+	fmt.Println("WALDir() c --",*c)
+	fmt.Println("WALDir() c.DedicatedWALDir --",c.DedicatedWALDir)
 	if c.DedicatedWALDir != "" {
 		return c.DedicatedWALDir
 	}
-	return filepath.Join(c.MemberDir(), "wal")
+	fmt.Println("WALDir() c.MemberDir() --",c.MemberDir())
+	dir:=filepath.Join(c.MemberDir(), "wal")
+	fmt.Println("WALDir() dir --",dir)
+	return dir
 }
 
 func (c *ServerConfig) SnapDir() string { return filepath.Join(c.MemberDir(), "snap") }

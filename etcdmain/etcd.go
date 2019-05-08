@@ -129,6 +129,7 @@ func startEtcdOrProxyV2() {
 	var errc <-chan error
 
 	which := identifyDataDirOrDie(cfg.ec.GetLogger(), cfg.ec.Dir)
+	fmt.Println("startEtcdOrProxyV2 which---",which) // result is member
 	if which != dirEmpty {
 		if lg != nil {
 			lg.Info(
@@ -553,7 +554,9 @@ func startProxy(cfg *config) error {
 // identifyDataDirOrDie returns the type of the data dir.
 // Dies if the datadir is invalid.
 func identifyDataDirOrDie(lg *zap.Logger, dir string) dirType {
+	fmt.Println("identifyDataDirOrDie dir---",dir)  // result is default.etcd  //why to get member type by default.etcd
 	names, err := fileutil.ReadDir(dir)
+	fmt.Println("identifyDataDirOrDie names---",names)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return dirEmpty
