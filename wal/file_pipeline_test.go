@@ -15,6 +15,7 @@
 package wal
 
 import (
+	"fmt"
 	"io/ioutil"
 	"math"
 	"os"
@@ -25,10 +26,11 @@ import (
 
 func TestFilePipeline(t *testing.T) {
 	tdir, err := ioutil.TempDir(os.TempDir(), "wal-test")
+	fmt.Println(os.TempDir(),tdir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(tdir)
+	// defer os.RemoveAll(tdir)
 
 	fp := newFilePipeline(zap.NewExample(), tdir, SegmentSizeBytes)
 	defer fp.Close()

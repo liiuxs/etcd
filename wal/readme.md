@@ -21,8 +21,12 @@ func Open(lg *zap.Logger, dirpath string, snap walpb.Snapshot) (*WAL, error) {
 
 ```
 
+the wal file under member, when to write ? 
+
 
 #### todo
 
 1. write a wal file
 2. read a wal file
+
+3. syscall.FcntlFlock(f.Fd(), F_OFD_SETLK, &flock)
