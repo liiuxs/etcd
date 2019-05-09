@@ -327,6 +327,7 @@ func openAtIndex(lg *zap.Logger, dirpath string, snap walpb.Snapshot, write bool
 			closer()
 			return nil, err
 		}
+		// open goroutine to write
 		w.fp = newFilePipeline(lg, w.dir, SegmentSizeBytes)
 	}
 
