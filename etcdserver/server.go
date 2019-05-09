@@ -24,7 +24,10 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"reflect"
 	"regexp"
+	runtimeruntime "runtime"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -709,6 +712,7 @@ func (s *EtcdServer) adjustTicks() {
 // Start must be non-blocking; any long-running server functionality
 // should be implemented in goroutines.
 func (s *EtcdServer) Start() {
+	debug.PrintStack()
 	s.start()
 	s.goAttach(func() { s.adjustTicks() })
 	s.goAttach(func() { s.publish(s.Cfg.ReqTimeout()) })
@@ -2424,6 +2428,7 @@ func (s *EtcdServer) goAttach(f func()) {
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
+		fmt.Printf("-----------------------------------runtime.FuncForPC(f).Name():%v \n",  runtimeruntime.FuncForPC(reflect.ValueOf(f).Pointer()).Name())
 		f()
 	}()
 }

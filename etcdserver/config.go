@@ -18,7 +18,6 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
-	"runtime/debug"
 	"sort"
 	"strings"
 	"time"
@@ -256,7 +255,7 @@ func (c *ServerConfig) MemberDir() string { return filepath.Join(c.DataDir, "mem
 
 func (c *ServerConfig) WALDir() string {
 	fmt.Println()
-	debug.PrintStack()
+	//debug.PrintStack()
 	fmt.Println("WALDir() c --",*c)
 	fmt.Println("WALDir() c.DedicatedWALDir --",c.DedicatedWALDir)
 	if c.DedicatedWALDir != "" {
