@@ -17,6 +17,7 @@ package etcdserver
 import (
 	"encoding/json"
 	"expvar"
+	"fmt"
 	"log"
 	"sort"
 	"sync"
@@ -417,6 +418,7 @@ func (r *raftNode) advanceTicks(ticks int) {
 }
 
 func startNode(cfg ServerConfig, cl *membership.RaftCluster, ids []types.ID) (id types.ID, n raft.Node, s *raft.MemoryStorage, w *wal.WAL) {
+	fmt.Println("raft startNode--------------------------------------------------------------")
 	var err error
 	member := cl.MemberByName(cfg.Name)
 	metadata := pbutil.MustMarshal(

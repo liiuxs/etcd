@@ -352,8 +352,10 @@ func openWALFiles(lg *zap.Logger, dirpath string, names []string, nameIndex int,
 	rcs := make([]io.ReadCloser, 0)
 	rs := make([]io.Reader, 0)
 	ls := make([]*fileutil.LockedFile, 0)
+	fmt.Println(" openWALFiles nameIndex--- ",dirpath,names,nameIndex,write)
 	for _, name := range names[nameIndex:] {
 		p := filepath.Join(dirpath, name)
+		fmt.Println(" openWALFiles --- ",dirpath,name,p)
 		if write {
 			l, err := fileutil.TryLockFile(p, os.O_RDWR, fileutil.PrivateFileMode)
 			if err != nil {
@@ -371,6 +373,7 @@ func openWALFiles(lg *zap.Logger, dirpath string, names []string, nameIndex int,
 			ls = append(ls, nil)
 			rcs = append(rcs, rf)
 		}
+		// out if append demo
 		rs = append(rs, rcs[len(rcs)-1])
 	}
 

@@ -340,9 +340,11 @@ func NewServer(cfg ServerConfig) (srv *EtcdServer, err error) {
 		remotes  []*membership.Member
 		snapshot *raftpb.Snapshot
 	)
+	fmt.Println("================",haveWAL,cfg.NewCluster)
 
 	switch {
 	case !haveWAL && !cfg.NewCluster:
+		fmt.Println(" !haveWAL && !cfg.NewCluster --------1111",1)
 		if err = cfg.VerifyJoinExisting(); err != nil {
 			return nil, err
 		}
@@ -369,6 +371,7 @@ func NewServer(cfg ServerConfig) (srv *EtcdServer, err error) {
 		cl.SetID(id, existingCluster.ID())
 
 	case !haveWAL && cfg.NewCluster:
+		fmt.Println("  !haveWAL && cfg.NewCluster ------1111",2)
 		if err = cfg.VerifyBootstrap(); err != nil {
 			return nil, err
 		}
@@ -404,6 +407,7 @@ func NewServer(cfg ServerConfig) (srv *EtcdServer, err error) {
 		cl.SetID(id, cl.ID())
 
 	case haveWAL:
+		fmt.Println(" haveWAL -------1111",3)
 		if err = fileutil.IsDirWriteable(cfg.MemberDir()); err != nil {
 			return nil, fmt.Errorf("cannot write to member directory: %v", err)
 		}
@@ -465,9 +469,13 @@ func NewServer(cfg ServerConfig) (srv *EtcdServer, err error) {
 		}
 
 		if !cfg.ForceNewCluster {
+			fmt.Println("id, cl, n, s, w = restartNode(cfg, snapshot)----0",id)
 			id, cl, n, s, w = restartNode(cfg, snapshot)
+			fmt.Println("id, cl, n, s, w = restartNode(cfg, snapshot)----0",id)
 		} else {
+			fmt.Println("id, cl, n, s, w = restartAsStandaloneNode(cfg, snapshot)----",id, cl, n, s, w)
 			id, cl, n, s, w = restartAsStandaloneNode(cfg, snapshot)
+			fmt.Println("id, cl, n, s, w = restartAsStandaloneNode(cfg, snapshot)----",id, cl, n, s, w)
 		}
 
 		cl.SetStore(st)
@@ -2254,11 +2262,16 @@ func (s *EtcdServer) monitorVersions() {
 	for {
 		select {
 		case <-s.forceVersionC:
+			fmt.Println("--monitorVersions--",1,time.Now().Format(time.RFC3339Nano))
 		case <-time.After(monitorVersionInterval):
+			fmt.Println("--monitorVersions--",2,time.Now().Format(time.RFC3339Nano))
 		case <-s.stopping:
+			fmt.Println("--monitorVersions--",3)
 			return
 		}
+		fmt.Println("--monitorVersions--",4,time.Now().Format(time.RFC3339Nano))
 
+		fmt.Println(s.Leader(),11111,s.ID())
 		if s.Leader() != s.ID() {
 			continue
 		}
